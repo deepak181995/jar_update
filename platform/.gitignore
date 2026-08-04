@@ -1,0 +1,7 @@
+node_modules/
+dist/
+static/admin/
+dev.db
+__pycache__/
+*.pyc
+.venv/
