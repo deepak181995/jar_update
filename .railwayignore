@@ -1,0 +1,7 @@
+jar_updater.exe
+jar_updater1.exe
+platform/admin-ui/node_modules/
+platform/admin-ui/dist/
+platform/static/
+platform/dev.db
+**/__pycache__/
