@@ -15,6 +15,11 @@ export default function Login({ onLogin }) {
     e.preventDefault(); setErr(''); setBusy(true)
     try {
       const r = await api('POST', '/admin/api/auth/login', { email, password })
+      if (r.token) {
+        setToken(r.token)
+        onLogin({ email: r.email, role: r.role, name: r.name })
+        return
+      }
       setPre(r.pre_token)
       if (r.step === 'enrol_2fa') { setEnrol(r); setStep('enrol') }
       else setStep('code')

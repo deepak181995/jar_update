@@ -11,6 +11,7 @@ ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com")
 ADMIN_INITIAL_PASSWORD = os.environ.get("ADMIN_INITIAL_PASSWORD", "changeme")
 ENV = os.environ.get("ENV", "development")
 
+REQUIRE_2FA = os.environ.get("REQUIRE_2FA", "true").lower() == "true"
 SESSION_MINUTES = 30          # inactivity expiry
 LOCKOUT_THRESHOLD = 5         # failed logins before lockout
 LOCKOUT_MINUTES = 15

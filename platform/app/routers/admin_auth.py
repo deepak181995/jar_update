@@ -9,6 +9,7 @@ from ..auth import (
     check_lockout, current_user, decode_token, hash_password, issue_token,
     register_failed_login, totp_uri, verify_password, verify_totp,
 )
+from ..config import REQUIRE_2FA
 from ..db import get_db
 
 router = APIRouter(prefix="/admin/api/auth", tags=["admin-auth"])
@@ -37,6 +38,11 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
 
     user.failed_attempts = 0
     db.commit()
+
+    if not REQUIRE_2FA:
+        audit(db, request, user, "login", "admin_user", user.id)
+        return {"token": issue_token(user), "role": user.role, "email": user.email, "name": user.name}
+
     pre = issue_token(user, scope="pre-2fa")
 
     if not user.totp_secret:
