@@ -1,0 +1,5 @@
+admin-ui/node_modules/
+admin-ui/dist/
+static/
+dev.db
+__pycache__/
