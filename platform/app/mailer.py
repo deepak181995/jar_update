@@ -12,8 +12,12 @@ def send_email(to: str, subject: str, body: str) -> None:
     msg["Subject"] = subject
     msg["From"] = SMTP_USER
     msg["To"] = to
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
-        s.starttls()
-        s.login(SMTP_USER, SMTP_PASSWORD)
-        s.send_message(msg)
-    log.info("Sent mail to %s: %s", to, subject)
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as s:
+            s.starttls()
+            s.login(SMTP_USER, SMTP_PASSWORD)
+            s.send_message(msg)
+        log.info("Sent mail to %s: %s", to, subject)
+    except Exception as e:
+        log.error("Mail send failed (%s): %s", type(e).__name__, str(e)[:200])
+        raise
