@@ -22,6 +22,7 @@ export default function Login({ onLogin }) {
       }
       setPre(r.pre_token)
       if (r.step === 'enrol_2fa') { setEnrol(r); setStep('enrol') }
+      else if (r.step === 'verify_otp') setStep('otp')
       else setStep('code')
     } catch (e2) { setErr(e2.message) } finally { setBusy(false) }
   }
@@ -31,7 +32,9 @@ export default function Login({ onLogin }) {
     try {
       const r = step === 'enrol'
         ? await api('POST', '/admin/api/auth/enrol', { pre_token: pre, totp_secret: enrol.totp_secret, code })
-        : await api('POST', '/admin/api/auth/verify', { pre_token: pre, code })
+        : step === 'otp'
+          ? await api('POST', '/admin/api/auth/verify-otp', { pre_token: pre, code })
+          : await api('POST', '/admin/api/auth/verify', { pre_token: pre, code })
       setToken(r.token)
       onLogin({ email: r.email, role: r.role, name: r.name })
     } catch (e2) { setErr(e2.message) } finally { setBusy(false) }
@@ -65,6 +68,15 @@ export default function Login({ onLogin }) {
             <label>6 digit code from the app</label>
             <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" maxLength={6} required autoFocus />
             <div style={{ marginTop: 14 }}><button className="btn accent" disabled={busy} style={{ width: '100%' }}>Verify and sign in</button></div>
+          </form>
+        )}
+
+        {step === 'otp' && (
+          <form onSubmit={submitCode}>
+            <div className="notice">A 6 digit sign in code has been sent to <b>{email}</b>. Enter it below.</div>
+            <label>Sign in code</label>
+            <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" maxLength={6} required autoFocus />
+            <div style={{ marginTop: 14 }}><button className="btn accent" disabled={busy} style={{ width: '100%' }}>Sign in</button></div>
           </form>
         )}
 

@@ -12,6 +12,16 @@ ADMIN_INITIAL_PASSWORD = os.environ.get("ADMIN_INITIAL_PASSWORD", "changeme")
 ENV = os.environ.get("ENV", "development")
 
 REQUIRE_2FA = os.environ.get("REQUIRE_2FA", "true").lower() == "true"
+# Two factor mode: "off", "totp" (authenticator app) or "email" (OTP by email).
+TWO_FA_MODE = os.environ.get("TWO_FA_MODE", "totp" if REQUIRE_2FA else "off").lower()
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", os.environ.get("ADMIN_EMAIL", ""))
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+
+OTP_MINUTES = 10
+OTP_MAX_ATTEMPTS = 5
 SESSION_MINUTES = 30          # inactivity expiry
 LOCKOUT_THRESHOLD = 5         # failed logins before lockout
 LOCKOUT_MINUTES = 15

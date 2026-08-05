@@ -9,7 +9,8 @@ from ..auth import (
     check_lockout, current_user, decode_token, hash_password, issue_token,
     register_failed_login, totp_uri, verify_password, verify_totp,
 )
-from ..config import REQUIRE_2FA
+from ..config import OTP_MAX_ATTEMPTS, OTP_MINUTES, TWO_FA_MODE
+from .. import mailer
 from ..db import get_db
 
 router = APIRouter(prefix="/admin/api/auth", tags=["admin-auth"])
@@ -39,11 +40,32 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     user.failed_attempts = 0
     db.commit()
 
-    if not REQUIRE_2FA:
+    if TWO_FA_MODE == "off":
         audit(db, request, user, "login", "admin_user", user.id)
         return {"token": issue_token(user), "role": user.role, "email": user.email, "name": user.name}
 
     pre = issue_token(user, scope="pre-2fa")
+
+    if TWO_FA_MODE == "email":
+        import hashlib
+        import hmac as hmac_mod
+        import secrets as sec
+        from datetime import datetime, timedelta, timezone
+        from ..config import SECRET_KEY
+        code = f"{sec.randbelow(1000000):06d}"
+        user.otp_hash = hmac_mod.new(SECRET_KEY.encode(), code.encode(), hashlib.sha256).hexdigest()
+        user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_MINUTES)
+        user.otp_attempts = 0
+        db.commit()
+        try:
+            mailer.send_email(
+                user.email, "GEC Console sign in code",
+                f"Your sign in code is {code}\n\nIt is valid for {OTP_MINUTES} minutes. "
+                "If you did not try to sign in, you can ignore this email.")
+        except Exception:
+            raise HTTPException(502, "Could not send the sign in code. Try again shortly.")
+        audit(db, request, user, "otp_sent", "admin_user", user.id)
+        return {"step": "verify_otp", "pre_token": pre}
 
     if not user.totp_secret:
         # First login: enrol two factor before a session is granted.
@@ -92,6 +114,40 @@ def verify(body: TotpIn, request: Request, db: Session = Depends(get_db)):
         audit(db, request, None, "2fa_failed", "admin_user", user.id)
         raise HTTPException(401, "Incorrect code")
     user.failed_attempts = 0
+    db.commit()
+    audit(db, request, user, "login", "admin_user", user.id)
+    return {"token": issue_token(user), "role": user.role, "email": user.email, "name": user.name}
+
+
+@router.post("/verify-otp")
+def verify_otp(body: TotpIn, request: Request, db: Session = Depends(get_db)):
+    import hashlib
+    import hmac as hmac_mod
+    from datetime import datetime, timezone
+    from ..config import SECRET_KEY
+
+    payload = decode_token(body.pre_token, scope="pre-2fa")
+    user = db.get(models.AdminUser, int(payload["sub"]))
+    if not user or not user.is_active:
+        raise HTTPException(401, "Account unavailable")
+    check_lockout(user)
+    exp = user.otp_expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if not user.otp_hash or not exp or exp < datetime.now(timezone.utc):
+        raise HTTPException(401, "Code expired. Sign in again to get a new one.")
+    if user.otp_attempts >= OTP_MAX_ATTEMPTS:
+        user.otp_hash = None
+        db.commit()
+        raise HTTPException(429, "Too many attempts. Sign in again to get a new code.")
+    given = hmac_mod.new(SECRET_KEY.encode(), body.code.strip().encode(), hashlib.sha256).hexdigest()
+    if not hmac_mod.compare_digest(given, user.otp_hash):
+        user.otp_attempts += 1
+        db.commit()
+        audit(db, request, None, "otp_failed", "admin_user", user.id)
+        raise HTTPException(401, "Incorrect code")
+    user.otp_hash = None
+    user.otp_attempts = 0
     db.commit()
     audit(db, request, user, "login", "admin_user", user.id)
     return {"token": issue_token(user), "role": user.role, "email": user.email, "name": user.name}

@@ -25,6 +25,13 @@ app = FastAPI(
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+    # Additive migrations for columns introduced after first release.
+    if engine.dialect.name == "postgresql":
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_hash VARCHAR(128)"))
+            conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_expires_at TIMESTAMPTZ"))
+            conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_attempts INTEGER DEFAULT 0"))
     db = SessionLocal()
     try:
         if not db.query(models.AdminUser).first():
