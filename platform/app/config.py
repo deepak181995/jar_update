@@ -20,6 +20,9 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", os.environ.get("ADMIN_EMAIL", ""))
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+RESEND_FROM = os.environ.get("RESEND_FROM", "GEC Console <onboarding@resend.dev>")
+
 OTP_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5
 SESSION_MINUTES = 30          # inactivity expiry
