@@ -33,6 +33,8 @@ def startup():
             conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_expires_at TIMESTAMPTZ"))
             conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_attempts INTEGER DEFAULT 0"))
             conn.execute(text("ALTER TABLE quote_requests ADD COLUMN IF NOT EXISTS partner_reference VARCHAR(128) DEFAULT ''"))
+            conn.execute(text("ALTER TABLE partners ADD COLUMN IF NOT EXISTS environment VARCHAR(16) DEFAULT 'uat'"))
+            conn.execute(text("ALTER TABLE partners ADD COLUMN IF NOT EXISTS api_signing_secret VARCHAR(255)"))
     from . import callbacks
     callbacks.start_worker()
     db = SessionLocal()

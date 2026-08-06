@@ -4,6 +4,8 @@ Authentication: X-API-Key header carrying the key issued in the admin
 console. Responses never contain buy rates, margins or forwarder details;
 the serialisation guard in main.py enforces this a second time.
 """
+import hashlib
+import hmac as hmac_mod
 import json
 import secrets
 import time
@@ -18,6 +20,8 @@ from .. import models
 from ..db import get_db
 from ..sla import deadline_for_tier
 
+SIGNATURE_WINDOW_SECONDS = 300
+
 router = APIRouter(prefix="/v1", tags=["partner"])
 
 MODES = {"air", "sea_fcl", "sea_lcl", "multimodal"}
@@ -26,8 +30,8 @@ MODES = {"air", "sea_fcl", "sea_lcl", "multimodal"}
 _rate_windows: dict[int, list] = {}
 
 
-def partner_auth(request: Request, x_api_key: str = Header(default=""),
-                 db: Session = Depends(get_db)) -> models.Partner:
+async def partner_auth(request: Request, x_api_key: str = Header(default=""),
+                       db: Session = Depends(get_db)) -> models.Partner:
     key = x_api_key or ""
     auth = request.headers.get("Authorization", "")
     if not key and auth.startswith("Bearer "):
@@ -39,10 +43,40 @@ def partner_auth(request: Request, x_api_key: str = Header(default=""),
             try:
                 if h and bcrypt.verify(key, h):
                     _enforce_rate_limit(p)
+                    if p.environment == "production":
+                        await _verify_signature(request, p)
                     return p
+            except HTTPException:
+                raise
             except Exception:
                 continue
     raise HTTPException(401, "Invalid API key")
+
+
+async def _verify_signature(request: Request, p: models.Partner):
+    """Production partners must sign every request:
+
+    X-GEC-Timestamp: unix seconds
+    X-GEC-Signature: hex HMAC-SHA256(signing_secret,
+                     "{timestamp}.{METHOD}.{path}.{raw_body}")
+    """
+    if not p.api_signing_secret:
+        raise HTTPException(401, "Signing not provisioned for this account. Contact GEC.")
+    ts = request.headers.get("X-GEC-Timestamp", "")
+    sig = request.headers.get("X-GEC-Signature", "")
+    if not ts or not sig:
+        raise HTTPException(401, "Signed request required: send X-GEC-Timestamp and X-GEC-Signature.")
+    try:
+        skew = abs(time.time() - int(ts))
+    except ValueError:
+        raise HTTPException(401, "Invalid X-GEC-Timestamp")
+    if skew > SIGNATURE_WINDOW_SECONDS:
+        raise HTTPException(401, "Request timestamp outside the allowed window")
+    body = await request.body()
+    base = f"{ts}.{request.method}.{request.url.path}.".encode() + body
+    expected = hmac_mod.new(p.api_signing_secret.encode(), base, hashlib.sha256).hexdigest()
+    if not hmac_mod.compare_digest(expected, sig.strip().lower()):
+        raise HTTPException(401, "Invalid request signature")
 
 
 def _enforce_rate_limit(p: models.Partner):

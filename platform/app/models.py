@@ -79,6 +79,8 @@ class Partner(Base):
     api_key_hash_secondary: Mapped[str | None] = mapped_column(String(255), nullable=True)  # rotation window
     callback_url: Mapped[str] = mapped_column(String(512), default="")
     callback_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment: Mapped[str] = mapped_column(String(16), default="uat")  # uat | production
+    api_signing_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
     rate_limit: Mapped[int] = mapped_column(Integer, default=60)  # requests per minute
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

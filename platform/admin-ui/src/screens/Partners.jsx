@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.js'
 
-const EMPTY = { name: '', callback_url: '', rate_limit: 60, is_active: true }
+const EMPTY = { name: '', callback_url: '', rate_limit: 60, environment: 'uat', is_active: true }
 
 export default function Partners() {
   const [items, setItems] = useState([])
@@ -32,16 +32,19 @@ export default function Partners() {
           <div className="secret">{keyInfo.api_key}</div>
           <b>Callback signing secret:</b>
           <div className="secret">{keyInfo.callback_secret}</div>
+          <b>Request signing secret{keyInfo.signing_required ? ' (required: production account)' : ' (not required for UAT)'}:</b>
+          <div className="secret">{keyInfo.api_signing_secret}</div>
           <button className="btn sm ghost" onClick={() => setKeyInfo(null)}>Dismiss</button>
         </div>
       )}
       <div className="card tablewrap">
         <table>
-          <thead><tr><th>Name</th><th>Callback URL</th><th>Rate limit</th><th>Keys</th><th>Active</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Environment</th><th>Callback URL</th><th>Rate limit</th><th>Keys</th><th>Active</th><th></th></tr></thead>
           <tbody>
             {items.map(p => (
               <tr key={p.id}>
                 <td><b>{p.name}</b></td>
+                <td>{p.environment === 'production' ? <span className="pill ok">production · signed</span> : <span className="pill PENDING">UAT</span>}</td>
                 <td className="muted">{p.callback_url || '—'}</td>
                 <td>{p.rate_limit}/min</td>
                 <td>{p.has_api_key ? 'primary' : 'none'}{p.has_secondary_key ? ' + old (rotation)' : ''}</td>
@@ -53,7 +56,7 @@ export default function Partners() {
                 </td>
               </tr>
             ))}
-            {!items.length && <tr><td colSpan={6} className="muted">No partners yet. Add Rafttaar.ai here when ready.</td></tr>}
+            {!items.length && <tr><td colSpan={7} className="muted">No partners yet. Add Rafttaar.ai here when ready.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -69,7 +72,7 @@ function Modal({ p0, onClose }) {
 
   async function submit(e) {
     e.preventDefault(); setErr('')
-    const body = { name: f.name, callback_url: f.callback_url, rate_limit: parseInt(f.rate_limit) || 60, is_active: f.is_active }
+    const body = { name: f.name, callback_url: f.callback_url, rate_limit: parseInt(f.rate_limit) || 60, environment: f.environment || 'uat', is_active: f.is_active }
     try {
       if (p0.id) await api('PUT', `/admin/api/partners/${p0.id}`, body)
       else await api('POST', '/admin/api/partners', body)
@@ -86,6 +89,11 @@ function Modal({ p0, onClose }) {
           <label>Name</label><input value={f.name} onChange={set('name')} required />
           <label>Callback URL (HTTPS)</label><input value={f.callback_url} onChange={set('callback_url')} placeholder="https://partner.example/webhooks/gec" />
           <label>Rate limit (requests per minute)</label><input type="number" min="1" value={f.rate_limit} onChange={set('rate_limit')} />
+          <label>Environment</label>
+          <select value={f.environment || 'uat'} onChange={set('environment')}>
+            <option value="uat">UAT (unsigned requests allowed)</option>
+            <option value="production">Production (signed requests required)</option>
+          </select>
           <div className="row" style={{ marginTop: 10 }}>
             <label style={{ margin: 0 }}><input type="checkbox" checked={f.is_active} onChange={set('is_active')} style={{ width: 'auto', marginRight: 6 }} />Active</label>
           </div>

@@ -72,6 +72,7 @@ class PartnerIn(BaseModel):
     name: str = Field(max_length=255)
     callback_url: str = Field(default="", max_length=512)
     rate_limit: int = Field(default=60, ge=1, le=6000)
+    environment: str = "uat"  # uat | production
     is_active: bool = True
 
     def validate_callback(self):
@@ -79,12 +80,15 @@ class PartnerIn(BaseModel):
             u = urlparse(self.callback_url)
             if u.scheme != "https" or not u.netloc:
                 raise HTTPException(422, "callback_url must be a valid HTTPS URL")
+        if self.environment not in ("uat", "production"):
+            raise HTTPException(422, "environment must be uat or production")
 
 
 def partner_out(p: models.Partner) -> dict:
     return {
         "id": p.id, "name": p.name, "callback_url": p.callback_url,
         "rate_limit": p.rate_limit, "is_active": p.is_active,
+        "environment": p.environment or "uat",
         "has_api_key": bool(p.api_key_hash),
         "has_secondary_key": bool(p.api_key_hash_secondary),
         "created_at": p.created_at,
@@ -140,10 +144,13 @@ def generate_key(pid: int, request: Request, rotate: bool = False,
         p.api_key_hash_secondary = None
     p.api_key_hash = bcrypt.hash(key)
     p.callback_secret = p.callback_secret or secrets.token_urlsafe(32)
+    p.api_signing_secret = p.api_signing_secret or secrets.token_urlsafe(32)
     db.commit()
     audit(db, request, user, "partner_key_generated", "partner", p.id,
           new={"rotate": rotate})
     return {"api_key": key, "callback_secret": p.callback_secret,
+            "api_signing_secret": p.api_signing_secret,
+            "signing_required": p.environment == "production",
             "note": "Store this key now. It is not retrievable later."}
 
 
