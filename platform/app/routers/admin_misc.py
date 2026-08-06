@@ -137,7 +137,8 @@ def generate_key(pid: int, request: Request, rotate: bool = False,
     p = db.get(models.Partner, pid)
     if not p:
         raise HTTPException(404, "Partner not found")
-    key = "gec_live_" + secrets.token_urlsafe(32)
+    prefix = "gec_live_" if (p.environment or "uat") == "production" else "gec_uat_"
+    key = prefix + secrets.token_urlsafe(32)
     if rotate and p.api_key_hash:
         p.api_key_hash_secondary = p.api_key_hash
     else:
