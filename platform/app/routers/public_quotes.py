@@ -182,7 +182,6 @@ def request_quote(body: QuoteIn, partner: models.Partner = Depends(partner_auth)
         db.commit()
         return {
             "reference_number": ref,
-            "environment": partner.environment or "uat",
             "status": "QUOTED",
             "quote": {
                 "sell_rate": float(rate.sell_rate),
@@ -201,7 +200,6 @@ def request_quote(body: QuoteIn, partner: models.Partner = Depends(partner_auth)
     db.commit()
     return {
         "reference_number": ref,
-        "environment": partner.environment or "uat",
         "status": "PENDING",
         "sla_response_by": qr.sla_deadline,
         "message": "Your quotation is being prepared by the GEC desk and will be "
@@ -219,7 +217,6 @@ def quote_status(reference_number: str, partner: models.Partner = Depends(partne
     if not qr:
         raise HTTPException(404, "Unknown reference")
     out = {"reference_number": qr.reference_number, "status": qr.status,
-           "environment": partner.environment or "uat",
            "partner_reference": qr.partner_reference or "",
            "sla_response_by": qr.sla_deadline}
     quote = (db.query(models.Quote)
