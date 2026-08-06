@@ -33,6 +33,7 @@ def _send_resend(to: str, subject: str, body: str) -> None:
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type": "application/json",
+            "User-Agent": "gec-platform/1.0",
         },
         method="POST",
     )
