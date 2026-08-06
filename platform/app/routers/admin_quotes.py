@@ -36,9 +36,14 @@ class QuoteRequestIn(BaseModel):
     sla_tier: str = "standard_4h"
 
 
-def qr_out(q: models.QuoteRequest) -> dict:
+def qr_out(q: models.QuoteRequest, partner_names: dict | None = None) -> dict:
     d = {c.name: getattr(q, c.name) for c in models.QuoteRequest.__table__.columns}
+    d["partner_name"] = (partner_names or {}).get(q.partner_id, "") if q.partner_id else ""
     return d
+
+
+def _partner_names(db: Session) -> dict:
+    return dict(db.query(models.Partner.id, models.Partner.name).all())
 
 
 @router.get("/pending")
@@ -48,7 +53,8 @@ def pending(user=Depends(require_role(ROLE_ADMIN, ROLE_OPS, ROLE_READONLY)),
             .filter(models.QuoteRequest.status == "PENDING")
             .order_by(models.QuoteRequest.sla_deadline.asc().nullslast())
             .limit(500).all())
-    return {"items": [qr_out(q) for q in rows]}
+    names = _partner_names(db)
+    return {"items": [qr_out(q, names) for q in rows]}
 
 
 @router.get("")
@@ -61,9 +67,10 @@ def list_requests(status: str = "", limit: int = 200,
     rows = query.order_by(models.QuoteRequest.id.desc()).limit(min(limit, 500)).all()
     quotes = {q.quote_request_id: q for q in db.query(models.Quote).filter(
         models.Quote.quote_request_id.in_([r.id for r in rows] or [0])).all()}
+    names = _partner_names(db)
     out = []
     for r in rows:
-        d = qr_out(r)
+        d = qr_out(r, names)
         qt = quotes.get(r.id)
         if qt:
             d["quote"] = {

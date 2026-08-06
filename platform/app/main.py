@@ -9,7 +9,7 @@ from . import models  # noqa: F401  (register tables)
 from .auth import hash_password
 from .config import ADMIN_EMAIL, ADMIN_INITIAL_PASSWORD, CONFIDENTIAL_KEYS, ENV, MAX_BODY_BYTES
 from .db import Base, SessionLocal, engine
-from .routers import admin_auth, admin_misc, admin_quotes, admin_rates
+from .routers import admin_auth, admin_misc, admin_quotes, admin_rates, public_quotes
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gec")
@@ -108,6 +108,7 @@ def health():
     return {"status": "ok", "service": "gec-freight-api"}
 
 
+app.include_router(public_quotes.router)
 app.include_router(admin_auth.router)
 app.include_router(admin_rates.router)
 app.include_router(admin_quotes.router)

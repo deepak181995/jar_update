@@ -51,11 +51,12 @@ export default function Dashboard({ me }) {
         </div>
         <div className="tablewrap">
           <table>
-            <thead><tr><th>Reference</th><th>Route</th><th>Mode</th><th>Cargo</th><th>Tier</th><th>SLA</th>{canWrite && <th></th>}</tr></thead>
+            <thead><tr><th>Reference</th><th>Source</th><th>Route</th><th>Mode</th><th>Cargo</th><th>Tier</th><th>SLA</th>{canWrite && <th></th>}</tr></thead>
             <tbody>
               {pending.map(q => (
                 <tr key={q.id}>
                   <td>{q.reference_number}</td>
+                  <td>{q.partner_name || 'Manual'}</td>
                   <td>{q.origin_port} → {q.destination_port}, {q.destination_country}</td>
                   <td>{q.mode}</td>
                   <td>{q.cargo_description?.slice(0, 60)}</td>
@@ -64,7 +65,7 @@ export default function Dashboard({ me }) {
                   {canWrite && <td><button className="btn sm accent" onClick={() => setEntry(q)}>Enter quote</button></td>}
                 </tr>
               ))}
-              {!pending.length && <tr><td colSpan={7} className="muted">Nothing pending. All caught up.</td></tr>}
+              {!pending.length && <tr><td colSpan={8} className="muted">Nothing pending. All caught up.</td></tr>}
             </tbody>
           </table>
         </div>
