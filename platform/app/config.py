@@ -22,6 +22,14 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "GEC Console <onboarding@resend.dev>")
+# Optional per-recipient key overrides, JSON object of {email: api_key}.
+# Used while sender accounts are in test mode and can only reach their owner.
+try:
+    import json as _json
+    RESEND_KEY_MAP = {k.lower(): v for k, v in _json.loads(
+        os.environ.get("RESEND_KEY_MAP", "{}")).items()}
+except Exception:
+    RESEND_KEY_MAP = {}
 
 OTP_MINUTES = 10
 OTP_MAX_ATTEMPTS = 5

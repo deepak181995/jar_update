@@ -5,7 +5,8 @@ import urllib.request
 from email.mime.text import MIMEText
 
 from .config import (
-    RESEND_API_KEY, RESEND_FROM, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USER,
+    RESEND_API_KEY, RESEND_FROM, RESEND_KEY_MAP, SMTP_HOST, SMTP_PASSWORD,
+    SMTP_PORT, SMTP_USER,
 )
 
 log = logging.getLogger("gec.mail")
@@ -24,6 +25,7 @@ def send_email(to: str, subject: str, body: str) -> None:
 
 
 def _send_resend(to: str, subject: str, body: str) -> None:
+    api_key = RESEND_KEY_MAP.get(to.lower().strip(), RESEND_API_KEY)
     req = urllib.request.Request(
         "https://api.resend.com/emails",
         data=json.dumps({
@@ -31,7 +33,7 @@ def _send_resend(to: str, subject: str, body: str) -> None:
             "subject": subject, "text": body,
         }).encode(),
         headers={
-            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": "gec-platform/1.0",
         },
