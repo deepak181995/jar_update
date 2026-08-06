@@ -319,6 +319,38 @@ def retry_callback(cid: int, request: Request,
     return {"ok": True}
 
 
+# ---------- Maintenance (administrator only) ----------
+
+class PurgeIn(BaseModel):
+    confirm: str
+
+
+@router.post("/maintenance/clear-operational-data")
+def clear_operational_data(body: PurgeIn, request: Request,
+                           user=Depends(require_role(ROLE_ADMIN)),
+                           db: Session = Depends(get_db)):
+    """Delete all operational records: quote requests, quotes, rates,
+    bookings, shipment events and callback deliveries. Partners, users,
+    forwarders and the audit log are kept. Requires the exact
+    confirmation phrase.
+    """
+    if body.confirm != "DELETE ALL OPERATIONAL DATA":
+        raise HTTPException(422, 'Confirmation phrase must be exactly "DELETE ALL OPERATIONAL DATA"')
+    counts = {}
+    for model, label in [
+        (models.ShipmentEvent, "shipment_events"),
+        (models.Booking, "bookings"),
+        (models.CallbackDelivery, "callback_deliveries"),
+        (models.Quote, "quotes"),
+        (models.QuoteRequest, "quote_requests"),
+        (models.Rate, "rates"),
+    ]:
+        counts[label] = db.query(model).delete()
+    db.commit()
+    audit(db, request, user, "operational_data_cleared", "system", "", new=counts)
+    return {"deleted": counts}
+
+
 # ---------- Audit log (administrator only) ----------
 
 @router.get("/audit")
