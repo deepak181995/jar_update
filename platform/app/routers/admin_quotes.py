@@ -164,9 +164,11 @@ def enter_quote(request_id: int, body: QuoteEntryIn, request: Request,
         qr.sla_deadline if qr.sla_deadline.tzinfo else qr.sla_deadline.replace(tzinfo=timezone.utc))
     audit(db, request, user, "quote_issued", "quote", quote.id,
           new={"request": qr.reference_number, "sell_rate": sell, "on_time": on_time})
-    # Phase 2: push the completed quote to the partner callback URL here.
+    from .. import callbacks
+    callback_queued = callbacks.schedule(db, qr, quote)
     return {"reference_number": qr.reference_number, "sell_rate": sell,
-            "currency": body.sell_currency, "on_time": on_time}
+            "currency": body.sell_currency, "on_time": on_time,
+            "callback_queued": callback_queued}
 
 
 @router.post("/{request_id}/cancel")

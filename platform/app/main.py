@@ -32,6 +32,9 @@ def startup():
             conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_hash VARCHAR(128)"))
             conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_expires_at TIMESTAMPTZ"))
             conn.execute(text("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS otp_attempts INTEGER DEFAULT 0"))
+            conn.execute(text("ALTER TABLE quote_requests ADD COLUMN IF NOT EXISTS partner_reference VARCHAR(128) DEFAULT ''"))
+    from . import callbacks
+    callbacks.start_worker()
     db = SessionLocal()
     try:
         if not db.query(models.AdminUser).first():

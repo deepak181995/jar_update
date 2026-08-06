@@ -8,6 +8,7 @@ import Forwarders from './screens/Forwarders.jsx'
 import Partners from './screens/Partners.jsx'
 import Users from './screens/Users.jsx'
 import Reports from './screens/Reports.jsx'
+import Callbacks from './screens/Callbacks.jsx'
 import Audit from './screens/Audit.jsx'
 
 const TABS = [
@@ -16,6 +17,7 @@ const TABS = [
   { id: 'rates', label: 'Rates', roles: ['administrator', 'operations', 'readonly'], C: Rates },
   { id: 'forwarders', label: 'Forwarders', roles: ['administrator', 'operations', 'readonly'], C: Forwarders },
   { id: 'partners', label: 'Partners', roles: ['administrator'], C: Partners },
+  { id: 'callbacks', label: 'Callbacks', roles: ['administrator', 'operations', 'readonly'], C: Callbacks },
   { id: 'users', label: 'Users', roles: ['administrator'], C: Users },
   { id: 'reports', label: 'Reports', roles: ['administrator', 'operations', 'readonly'], C: Reports },
   { id: 'audit', label: 'Audit Log', roles: ['administrator'], C: Audit },

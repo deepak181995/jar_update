@@ -126,6 +126,7 @@ def request_quote(body: QuoteIn, partner: models.Partner = Depends(partner_auth)
         mode=body.mode, weight_kg=body.weight_kg, volume_cbm=body.volume_cbm,
         cargo_description=body.cargo_description, hs_code=body.hs_code,
         incoterm=body.incoterm, ready_date=body.ready_date,
+        partner_reference=body.partner_reference,
     )
 
     if rate is not None:
@@ -182,6 +183,7 @@ def quote_status(reference_number: str, partner: models.Partner = Depends(partne
     if not qr:
         raise HTTPException(404, "Unknown reference")
     out = {"reference_number": qr.reference_number, "status": qr.status,
+           "partner_reference": qr.partner_reference or "",
            "sla_response_by": qr.sla_deadline}
     quote = (db.query(models.Quote)
              .filter(models.Quote.quote_request_id == qr.id)

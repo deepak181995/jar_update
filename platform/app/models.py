@@ -100,6 +100,7 @@ class QuoteRequest(Base):
     hs_code: Mapped[str] = mapped_column(String(16), default="")
     incoterm: Mapped[str] = mapped_column(String(8), default="CIF")
     ready_date: Mapped[str] = mapped_column(String(32), default="")
+    partner_reference: Mapped[str] = mapped_column(String(128), default="")
     sla_tier: Mapped[str] = mapped_column(String(32), default="standard_4h")
     status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)  # PENDING | QUOTED | EXPIRED | CANCELLED
     sla_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -144,6 +145,21 @@ class ShipmentEvent(Base):
     event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     location: Mapped[str] = mapped_column(String(255), default="")
     remarks: Mapped[str] = mapped_column(Text, default="")
+
+
+class CallbackDelivery(Base):
+    __tablename__ = "callback_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    quote_request_id: Mapped[int] = mapped_column(ForeignKey("quote_requests.id"), index=True)
+    partner_id: Mapped[int] = mapped_column(ForeignKey("partners.id"))
+    url: Mapped[str] = mapped_column(String(512))
+    payload: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)  # PENDING | DELIVERED | FAILED
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(String(512), default="")
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AuditLog(Base):

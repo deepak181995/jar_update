@@ -274,6 +274,43 @@ def margin_by_route(user=Depends(require_role(ROLE_ADMIN)), db: Session = Depend
         for r in rows]}
 
 
+# ---------- Callback deliveries ----------
+
+@router.get("/callbacks")
+def list_callbacks(status: str = "", limit: int = 100,
+                   user=Depends(require_role(ROLE_ADMIN, ROLE_OPS, ROLE_READONLY)),
+                   db: Session = Depends(get_db)):
+    q = db.query(models.CallbackDelivery)
+    if status:
+        q = q.filter(models.CallbackDelivery.status == status)
+    rows = q.order_by(models.CallbackDelivery.id.desc()).limit(min(limit, 300)).all()
+    refs = {r.id: r.reference_number for r in db.query(models.QuoteRequest).filter(
+        models.QuoteRequest.id.in_([d.quote_request_id for d in rows] or [0])).all()}
+    names = dict(db.query(models.Partner.id, models.Partner.name).all())
+    return {"items": [{
+        "id": d.id, "reference_number": refs.get(d.quote_request_id, d.quote_request_id),
+        "partner_name": names.get(d.partner_id, ""), "url": d.url,
+        "status": d.status, "attempts": d.attempts, "last_error": d.last_error,
+        "next_retry_at": d.next_retry_at, "delivered_at": d.delivered_at,
+        "created_at": d.created_at,
+    } for d in rows]}
+
+
+@router.post("/callbacks/{cid}/retry")
+def retry_callback(cid: int, request: Request,
+                   user=Depends(require_role(ROLE_ADMIN, ROLE_OPS)),
+                   db: Session = Depends(get_db)):
+    d = db.get(models.CallbackDelivery, cid)
+    if not d:
+        raise HTTPException(404, "Delivery not found")
+    d.status = "PENDING"
+    d.attempts = 0
+    d.next_retry_at = datetime.now(timezone.utc)
+    db.commit()
+    audit(db, request, user, "callback_retry", "callback_delivery", d.id)
+    return {"ok": True}
+
+
 # ---------- Audit log (administrator only) ----------
 
 @router.get("/audit")
