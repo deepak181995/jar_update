@@ -82,6 +82,7 @@ python3 Drishti_cli.py --keys
 | `-f FILE` | read targets from a file, one per line, `#` comments allowed |
 | `--ai` | add a plain English summary of the report |
 | `--ai-backend` | force `auto`, `ollama`, `glm` or `off` for that run |
+| `--check-keys` | validate every configured key against its API |
 | `--no-colour` | plain text |
 
 More than one target prints a sorted summary table after the individual
@@ -174,6 +175,44 @@ fresh summary. Rewrite in the UI and `--fresh` on the CLI force a new one.
 
 Everything else works unchanged when no AI backend is available. The summary
 is an addition to the report, never a replacement for it.
+
+## Checking your keys
+
+Six keys is six chances to paste the wrong string. A wrong key does not throw
+an error during a lookup, it just quietly removes a source from the report,
+which is the worst way to find out.
+
+```
+./drishti --check-keys
+```
+
+Or Test keys in the web Settings modal. Every credential is checked and comes
+back as works, bad, limited, unset or unknown. Exit code is 1 if anything is
+outright rejected, so it fits in a pre-flight script.
+
+Two providers answer their lookup endpoint without checking the key at all:
+Shodan serves `/shodan/host` and GreyNoise serves the v3 community tier. If
+the check used those, any string would read as a working key, so it validates
+those two against `api-info` and `v2/riot` instead, which really do
+authenticate.
+
+## Editing the code
+
+The two builds are deliberately standalone single files, so the engine they
+share is physically duplicated: everything from the config section down to
+the end of the key check. Edit one and the other goes stale silently.
+
+```
+python3 sync_core.py             are they still identical
+python3 sync_core.py --diff      show what drifted
+python3 sync_core.py --from-cli  push the CLI engine into the web build
+python3 sync_core.py --from-web  the other direction
+```
+
+After a copy it re-parses both files and resolves every global, so a change
+that depends on a constant defined outside the shared region fails loudly
+instead of at runtime. Exit code is 0 in sync, 1 drifted, so it drops into a
+pre-commit hook. The self-test runs this check too.
 
 ## Cache
 

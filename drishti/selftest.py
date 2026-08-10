@@ -5,10 +5,11 @@ Drishti self-test. Run this once on any new machine:
     python3 selftest.py
 
 It proves the environment can actually run Drishti: Python version, module
-imports, outbound reachability of every keyless source, a real end to end
-lookup, the web app's routes served from a live server, and whether the AI
-layer has a backend to talk to. Standard library only, safe to run anywhere,
-touches nothing outside this folder except the network probes.
+imports, that both builds still share one engine, outbound reachability of
+every keyless source, a real end to end lookup, the web app's routes served
+from a live server, the validity of every configured API key, and whether the
+AI layer has a backend to talk to. Standard library only, safe to run
+anywhere, touches nothing outside this folder except the network probes.
 """
 
 import importlib.util
@@ -17,7 +18,6 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 
@@ -84,6 +84,17 @@ def main():
             report(PASS if fn() else FAIL, label)
         except Exception as exc:
             report(FAIL, label, str(exc)[:90])
+
+    section("Both builds share one engine")
+    sync = os.path.join(HERE, "sync_core.py")
+    if not os.path.exists(sync):
+        report(WARN, "sync_core.py", "not present, cannot check for drift")
+    else:
+        proc = subprocess.run([sys.executable, sync],
+                              capture_output=True, cwd=HERE)
+        detail = proc.stdout.decode("utf-8", "replace").strip().splitlines()
+        report(PASS if proc.returncode == 0 else FAIL, "engine identical in both files",
+               detail[0] if detail else "")
 
     section("Outbound reachability, keyless sources")
     probes = [
@@ -209,6 +220,24 @@ def main():
                     route("AI config route", _config)
         finally:
             proc.terminate()
+
+    section("API keys")
+    try:
+        rows = cli.check_keys(cli.load_config())
+        bad = [r for r in rows if r["state"] == "bad"]
+        configured = [r for r in rows if r["state"] != "unset"]
+        if not configured:
+            report(WARN, "no keys configured", "keyless tier only, add with --keys")
+        for row in rows:
+            if row["state"] == "unset":
+                continue
+            report(PASS if row["state"] == "works" else
+                   (FAIL if row["state"] == "bad" else WARN),
+                   row["label"], row["detail"][:60])
+        if bad:
+            report(FAIL, "key validity", "%d key(s) rejected outright" % len(bad))
+    except Exception as exc:
+        report(FAIL, "key check", str(exc)[:90])
 
     section("AI summary backends")
     try:

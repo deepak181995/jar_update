@@ -1148,6 +1148,127 @@ def explain(res, cfg, fresh=False):
                     "or add a GLM key with --keys"}
 
 
+# ---------------------------------------------------------------- key check
+
+# A benign, always-present address to validate a key against. Cheap for every
+# provider and never itself interesting.
+PROBE_IP = "8.8.8.8"
+
+
+# Two providers answer their lookup endpoint without checking the key at all:
+# Shodan serves /shodan/host and GreyNoise serves the v3 community tier openly.
+# Validating against those would call any string a working key, so the check
+# uses an endpoint that genuinely authenticates instead.
+VALIDATE_VIA = {
+    "shodan": lambda cfg: http_raw(
+        "https://api.shodan.io/api-info?key=%s"
+        % urllib.parse.quote(key(cfg, "shodan")), timeout=12),
+    "greynoise": lambda cfg: http_raw(
+        "https://api.greynoise.io/v2/riot/%s" % PROBE_IP,
+        headers={"key": key(cfg, "greynoise")}, timeout=12),
+}
+
+
+def classify_key_result(node):
+    """Turn a source result into a verdict about the key behind it."""
+    if node.get("nokey"):
+        return "unset", "no key configured"
+    if node.get("ok"):
+        return "works", "authenticated and returned data"
+    if node.get("timeout"):
+        return "unknown", "timed out, try again"
+    status = node.get("status")
+    detail = str(node.get("error") or "")[:110]
+    if status in (401, 403):
+        return "bad", detail or "rejected, HTTP %s" % status
+    if status == 429:
+        return "limited", detail or "rate limited, the key itself may be fine"
+    if status:
+        return "unknown", detail or "HTTP %s" % status
+    return "unknown", detail or "no response"
+
+
+def _auth_detail(body):
+    """Pull a human message out of a validation response, JSON or HTML."""
+    if not body:
+        return ""
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict):
+            for field in ("message", "error", "detail"):
+                if data.get(field):
+                    return str(data[field])[:110]
+    except Exception:
+        pass
+    match = re.search(r"<title>(.*?)</title>", body, re.S | re.I)
+    if match:
+        return match.group(1).strip()[:110]
+    return body.strip().splitlines()[0][:110] if body.strip() else ""
+
+
+def check_keys(cfg):
+    """Validate every configured credential against its own API.
+
+    Uses the real source function wherever that endpoint authenticates, and a
+    dedicated endpoint for the two providers that answer without a key.
+    """
+    keyed = [(name, label, fn) for name, label, fn, is_keyed in SOURCES if is_keyed]
+    out = []
+
+    def probe(item):
+        name, label, fn = item
+        started = time.time()
+        try:
+            if not key(cfg, name):
+                node = {"ok": False, "nokey": True}
+            elif name in VALIDATE_VIA:
+                body, status = VALIDATE_VIA[name](cfg)
+                node = ({"ok": True} if status == 200
+                        else {"ok": False, "status": status,
+                              "error": _auth_detail(body)})
+            else:
+                node = fn(PROBE_IP, cfg)
+        except Exception as exc:
+            node = {"ok": False, "error": str(exc)[:110]}
+        state, detail = classify_key_result(node)
+        return {"id": name, "label": label, "state": state, "detail": detail,
+                "elapsed": round(time.time() - started, 2)}
+
+    with futures.ThreadPoolExecutor(max_workers=len(keyed)) as pool:
+        out.extend(pool.map(probe, keyed))
+
+    # The AI credentials are not sources, so they are checked separately.
+    if ollama_up(cfg):
+        models = ollama_models(cfg)
+        out.append({"id": "ollama", "label": "Ollama (local AI)",
+                    "state": "works" if models else "limited",
+                    "detail": "%d model(s) at %s" % (len(models), ollama_host(cfg))
+                              if models else "running but no model pulled, "
+                                             "run: ollama pull llama3.2",
+                    "elapsed": 0})
+    else:
+        out.append({"id": "ollama", "label": "Ollama (local AI)", "state": "unset",
+                    "detail": "not running at %s" % ollama_host(cfg), "elapsed": 0})
+
+    if key(cfg, "glm"):
+        started = time.time()
+        node, err = ai_glm("Reply with the single word: ok", cfg)
+        if node:
+            state, detail = "works", "answered with %s" % node.get("model")
+        elif err and ("401" in err or "403" in err or "Authentication" in err):
+            state, detail = "bad", err[:110]
+        elif err and "429" in err:
+            state, detail = "limited", err[:110]
+        else:
+            state, detail = "unknown", (err or "no answer")[:110]
+        out.append({"id": "glm", "label": "GLM (cloud AI)", "state": state,
+                    "detail": detail, "elapsed": round(time.time() - started, 2)})
+    else:
+        out.append({"id": "glm", "label": "GLM (cloud AI)", "state": "unset",
+                    "detail": "no key configured", "elapsed": 0})
+    return out
+
+
 # ---------------------------------------------------------------- page
 
 PAGE = r"""<!doctype html>
@@ -1404,6 +1525,7 @@ select:focus{border-color:var(--nido-line)}
   <div class="body" id="dlg-body"></div>
   <footer>
     <span class="subtle mono" id="dlg-path" style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis"></span>
+    <button class="ghost" id="dlg-test">Test keys</button>
     <button class="ghost" id="dlg-close">Cancel</button>
     <button class="primary" id="dlg-save">Save</button>
   </footer>
@@ -1840,7 +1962,38 @@ $("#btn-settings").onclick = async () => {
      Keys are written to drishti_config.json with owner only permissions.</div>`;
   dlg.showModal();
 };
-$("#dlg-close").onclick = () => dlg.close();
+const KEY_STATE = {works:"ok", bad:"risk", limited:"cve", unset:"off", unknown:"cve"};
+$("#dlg-test").onclick = async () => {
+  const btn = $("#dlg-test");
+  const was = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Testing";
+  let box = $("#keycheck");
+  if(!box){
+    box = document.createElement("div");
+    box.id = "keycheck";
+    $("#dlg-body").prepend(box);
+  }
+  box.innerHTML = `<div class="subtle" style="margin-bottom:14px">
+    <span class="spin"></span> &nbsp;checking each key against an endpoint that authenticates</div>`;
+  try{
+    const r = await api("/api/checkkeys", {method:"POST", body:"{}"});
+    box.innerHTML = `<div style="margin:0 0 18px;padding:12px 14px;border:1px solid var(--line);
+        border-radius:8px;background:var(--panel2)">
+      <div style="font-size:12.5px;font-weight:600;color:var(--ink2);margin-bottom:8px">Key check</div>
+      <table class="kv">` +
+      r.results.map(x => `<tr><td>${esc(x.label)}</td><td>
+        <span class="chip ${KEY_STATE[x.state]||"off"}">${esc(x.state)}</span>
+        <span class="subtle">${esc(x.detail)}</span></td></tr>`).join("") +
+      `</table></div>`;
+  }catch(e){
+    box.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = was;
+  }
+};
+$("#dlg-close").onclick = () => { const b = $("#keycheck"); if(b) b.remove(); dlg.close(); };
 $("#dlg-save").onclick = async () => {
   const body = {};
   $$("#dlg-body input[data-key]").forEach(inp => {
@@ -2032,6 +2185,11 @@ def api_config():
                 cfg.pop(name, None)
     path = save_config(cfg)
     return jsonify({"saved": True, "path": path})
+
+
+@app.route("/api/checkkeys", methods=["POST"])
+def api_check_keys():
+    return jsonify({"results": check_keys(load_config())})
 
 
 @app.route("/api/explain", methods=["POST"])

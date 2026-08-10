@@ -8,6 +8,7 @@ Standard library only. No pip install. Runs in a-Shell on iPhone.
     python3 Drishti_cli.py --me
     python3 Drishti_cli.py -f targets.txt --json
     python3 Drishti_cli.py --keys
+    python3 Drishti_cli.py --check-keys
     python3 Drishti_cli.py --ai 45.155.205.233
 
 The --ai flag adds a plain English reading of the report. It talks to a local
@@ -1151,6 +1152,127 @@ def explain(res, cfg, fresh=False):
                     "or add a GLM key with --keys"}
 
 
+# ---------------------------------------------------------------- key check
+
+# A benign, always-present address to validate a key against. Cheap for every
+# provider and never itself interesting.
+PROBE_IP = "8.8.8.8"
+
+
+# Two providers answer their lookup endpoint without checking the key at all:
+# Shodan serves /shodan/host and GreyNoise serves the v3 community tier openly.
+# Validating against those would call any string a working key, so the check
+# uses an endpoint that genuinely authenticates instead.
+VALIDATE_VIA = {
+    "shodan": lambda cfg: http_raw(
+        "https://api.shodan.io/api-info?key=%s"
+        % urllib.parse.quote(key(cfg, "shodan")), timeout=12),
+    "greynoise": lambda cfg: http_raw(
+        "https://api.greynoise.io/v2/riot/%s" % PROBE_IP,
+        headers={"key": key(cfg, "greynoise")}, timeout=12),
+}
+
+
+def classify_key_result(node):
+    """Turn a source result into a verdict about the key behind it."""
+    if node.get("nokey"):
+        return "unset", "no key configured"
+    if node.get("ok"):
+        return "works", "authenticated and returned data"
+    if node.get("timeout"):
+        return "unknown", "timed out, try again"
+    status = node.get("status")
+    detail = str(node.get("error") or "")[:110]
+    if status in (401, 403):
+        return "bad", detail or "rejected, HTTP %s" % status
+    if status == 429:
+        return "limited", detail or "rate limited, the key itself may be fine"
+    if status:
+        return "unknown", detail or "HTTP %s" % status
+    return "unknown", detail or "no response"
+
+
+def _auth_detail(body):
+    """Pull a human message out of a validation response, JSON or HTML."""
+    if not body:
+        return ""
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict):
+            for field in ("message", "error", "detail"):
+                if data.get(field):
+                    return str(data[field])[:110]
+    except Exception:
+        pass
+    match = re.search(r"<title>(.*?)</title>", body, re.S | re.I)
+    if match:
+        return match.group(1).strip()[:110]
+    return body.strip().splitlines()[0][:110] if body.strip() else ""
+
+
+def check_keys(cfg):
+    """Validate every configured credential against its own API.
+
+    Uses the real source function wherever that endpoint authenticates, and a
+    dedicated endpoint for the two providers that answer without a key.
+    """
+    keyed = [(name, label, fn) for name, label, fn, is_keyed in SOURCES if is_keyed]
+    out = []
+
+    def probe(item):
+        name, label, fn = item
+        started = time.time()
+        try:
+            if not key(cfg, name):
+                node = {"ok": False, "nokey": True}
+            elif name in VALIDATE_VIA:
+                body, status = VALIDATE_VIA[name](cfg)
+                node = ({"ok": True} if status == 200
+                        else {"ok": False, "status": status,
+                              "error": _auth_detail(body)})
+            else:
+                node = fn(PROBE_IP, cfg)
+        except Exception as exc:
+            node = {"ok": False, "error": str(exc)[:110]}
+        state, detail = classify_key_result(node)
+        return {"id": name, "label": label, "state": state, "detail": detail,
+                "elapsed": round(time.time() - started, 2)}
+
+    with futures.ThreadPoolExecutor(max_workers=len(keyed)) as pool:
+        out.extend(pool.map(probe, keyed))
+
+    # The AI credentials are not sources, so they are checked separately.
+    if ollama_up(cfg):
+        models = ollama_models(cfg)
+        out.append({"id": "ollama", "label": "Ollama (local AI)",
+                    "state": "works" if models else "limited",
+                    "detail": "%d model(s) at %s" % (len(models), ollama_host(cfg))
+                              if models else "running but no model pulled, "
+                                             "run: ollama pull llama3.2",
+                    "elapsed": 0})
+    else:
+        out.append({"id": "ollama", "label": "Ollama (local AI)", "state": "unset",
+                    "detail": "not running at %s" % ollama_host(cfg), "elapsed": 0})
+
+    if key(cfg, "glm"):
+        started = time.time()
+        node, err = ai_glm("Reply with the single word: ok", cfg)
+        if node:
+            state, detail = "works", "answered with %s" % node.get("model")
+        elif err and ("401" in err or "403" in err or "Authentication" in err):
+            state, detail = "bad", err[:110]
+        elif err and "429" in err:
+            state, detail = "limited", err[:110]
+        else:
+            state, detail = "unknown", (err or "no answer")[:110]
+        out.append({"id": "glm", "label": "GLM (cloud AI)", "state": state,
+                    "detail": detail, "elapsed": round(time.time() - started, 2)})
+    else:
+        out.append({"id": "glm", "label": "GLM (cloud AI)", "state": "unset",
+                    "detail": "no key configured", "elapsed": 0})
+    return out
+
+
 # ---------------------------------------------------------------- render
 
 VERDICT_COLOUR = {
@@ -1512,6 +1634,40 @@ def manage_keys(cfg):
     print()
 
 
+KEY_STATE_COLOUR = {
+    "works": C.GREEN, "bad": C.RED, "limited": C.YELLOW,
+    "unset": C.GREY, "unknown": C.ORANGE,
+}
+
+
+def render_key_check(rows):
+    print()
+    print(rule("="))
+    print(" %s" % head("API KEY CHECK"))
+    print(rule("="))
+    print(paint(C.GREY, "  Each key is checked against an endpoint that really "
+                        "authenticates, so a junk key cannot read as working."))
+    print()
+    for row in rows:
+        colour = KEY_STATE_COLOUR.get(row["state"], C.GREY)
+        print("  %s  %s  %s"
+              % (paint(colour + C.BOLD, "%-8s" % row["state"]),
+                 paint(C.BOLD, "%-22s" % row["label"]),
+                 paint(C.GREY, row["detail"])))
+    print()
+    counts = {}
+    for row in rows:
+        counts[row["state"]] = counts.get(row["state"], 0) + 1
+    parts = ["%d %s" % (n, paint(KEY_STATE_COLOUR.get(st, C.GREY), st))
+             for st, n in sorted(counts.items())]
+    print(rule())
+    print("  " + "   ".join(parts))
+    if counts.get("bad"):
+        print(paint(C.RED, "  A key marked bad was rejected outright. "
+                           "Replace it with --keys."))
+    print()
+
+
 def my_ip():
     for url, field in (("https://ipwho.is/", "ip"),
                        ("https://api.ipify.org?format=json", "ip")):
@@ -1543,6 +1699,8 @@ def main(argv=None):
     parser.add_argument("targets", nargs="*", help="IP addresses or hostnames")
     parser.add_argument("--me", action="store_true", help="look up your own public IP")
     parser.add_argument("--keys", action="store_true", help="add or update API keys")
+    parser.add_argument("--check-keys", action="store_true",
+                        help="validate every configured key against its API")
     parser.add_argument("--json", action="store_true", help="raw JSON output, no colour")
     parser.add_argument("--fresh", action="store_true", help="bypass the 24 hour cache")
     parser.add_argument("--ai", action="store_true",
@@ -1562,6 +1720,14 @@ def main(argv=None):
     if args.keys:
         manage_keys(cfg)
         return 0
+
+    if args.check_keys:
+        rows = check_keys(cfg)
+        if args.json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            render_key_check(rows)
+        return 1 if any(r["state"] == "bad" for r in rows) else 0
 
     targets = list(args.targets)
     if args.file:
