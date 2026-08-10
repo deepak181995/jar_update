@@ -10,11 +10,16 @@ Single file Flask app for macOS. Start it and it opens itself:
 Serves on http://127.0.0.1:5055 and walks forward if that port is busy.
 API keys live in drishti_config.json next to this file. Results are cached
 in drishti_cache.db for 24 hours.
+
+Every report has an Explain button that turns the findings into plain English
+using a local Ollama model, or GLM in the cloud when Ollama is not running.
 """
 
 import base64
 import concurrent.futures as futures
 import csv
+import hashlib
+import hmac
 import io
 import ipaddress
 import json
@@ -68,6 +73,18 @@ KEY_FIELDS = [
     ("shodan", "Shodan", "https://account.shodan.io"),
     ("censys", "Censys (id:secret)", "https://search.censys.io/account/api"),
     ("securitytrails", "SecurityTrails", "https://securitytrails.com/app/account"),
+]
+
+# The plain English summary layer. Ollama runs locally and needs no key, GLM is
+# the cloud fallback. Preference lives in cfg["ai_backend"]: auto, ollama, glm, off.
+AI_FIELDS = [
+    ("glm", "GLM API key (cloud AI)", "https://open.bigmodel.cn/usercenter/apikeys"),
+]
+AI_SETTINGS = [
+    ("ai_backend", "AI backend: auto, ollama, glm or off", "auto"),
+    ("ollama_host", "Ollama host", "http://127.0.0.1:11434"),
+    ("ollama_model", "Ollama model", "llama3.2"),
+    ("glm_model", "GLM model", "glm-4-flash"),
 ]
 
 DNSBL_ZONES = [
@@ -859,6 +876,278 @@ def analyse(target, cfg, fresh=False, on_source=None):
     return res
 
 
+# ---------------------------------------------------------------- ai
+
+AI_TIMEOUT = 45
+OLLAMA_DEFAULT_HOST = "http://127.0.0.1:11434"
+OLLAMA_DEFAULT_MODEL = "llama3.2"
+GLM_DEFAULT_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+GLM_FALLBACK_ENDPOINT = "https://api.z.ai/api/paas/v4/chat/completions"
+GLM_DEFAULT_MODEL = "glm-4-flash"
+
+AI_SYSTEM = (
+    "You explain IP reputation reports to people who are not security "
+    "analysts. Use only the facts you are given. Never invent a detail, a "
+    "number or a source. If the report is thin, say the evidence is thin. "
+    "Write plain English. No jargon unless you define it in the same "
+    "sentence. No markdown, no bullet characters, no headings."
+)
+
+AI_INSTRUCTION = (
+    "Write three short paragraphs, each two sentences at most, separated by "
+    "a blank line.\n"
+    "1. What this address is and who runs it.\n"
+    "2. What the sources found and why that produced the verdict.\n"
+    "3. What the reader should do about it, concretely.\n"
+    "Do not repeat the raw numbers back as a list. Explain what they mean."
+)
+
+
+def ai_digest(res):
+    """Compact, factual brief for the model. Never send the raw source blob."""
+    src = res.get("sources") or {}
+    geo = src.get("geo") or {}
+    rdap = src.get("rdap") or {}
+    rdns = src.get("rdns") or {}
+    idb = src.get("internetdb") or {}
+    shodan = src.get("shodan") or {}
+    abuse = src.get("abuseipdb") or {}
+    vt = src.get("virustotal") or {}
+    gn = src.get("greynoise") or {}
+    dnsbl = src.get("dnsbl") or {}
+    tor = src.get("tor") or {}
+    urlscan = src.get("urlscan") or {}
+
+    ports = sorted(set((idb.get("ports") or []) + (shodan.get("ports") or [])))
+    vulns = sorted(set((idb.get("vulns") or []) + (shodan.get("vulns") or [])))
+    risky = [(p, RISKY_PORTS[p]) for p in ports if p in RISKY_PORTS]
+
+    lines = ["Address: %s" % (res.get("ip") or res.get("target"))]
+    if res.get("hostname"):
+        lines.append("Resolved from hostname: %s" % res["hostname"])
+    lines.append("Verdict: %s at %d out of 100 risk"
+                 % (res.get("verdict"), res.get("score", 0)))
+    if res.get("internal_kind"):
+        lines.append("This is a %s address, so no external source was queried."
+                     % res["internal_kind"])
+
+    if geo.get("ok"):
+        where = ", ".join(filter(None, [geo.get("city"), geo.get("country")]))
+        lines.append("Location: %s" % (where or "unknown"))
+        if geo.get("asn"):
+            lines.append("Network: AS%s %s" % (geo["asn"], geo.get("org") or ""))
+    if rdap.get("ok"):
+        if rdap.get("name"):
+            lines.append("Registry netname: %s" % rdap["name"])
+        if rdap.get("abuse"):
+            lines.append("Abuse contact: %s" % ", ".join(rdap["abuse"][:2]))
+    if rdns.get("ok"):
+        lines.append("Reverse DNS: %s" % (rdns.get("ptr") or "none set"))
+
+    if ports:
+        lines.append("Open ports: %s" % ", ".join(str(p) for p in ports[:20]))
+    if risky:
+        lines.append("Sensitive services exposed: %s"
+                     % ", ".join("%d %s" % (p, n) for p, n in risky[:8]))
+    if vulns:
+        lines.append("Known vulnerabilities on those services: %s"
+                     % ", ".join(vulns[:8]))
+
+    if abuse.get("ok"):
+        lines.append("AbuseIPDB: %d%% abuse confidence from %d reports by %d "
+                     "reporters%s"
+                     % (abuse.get("score", 0), abuse.get("reports", 0),
+                        abuse.get("distinct", 0),
+                        ", categories " + ", ".join(
+                            c["name"] for c in abuse.get("categories") or [])
+                        if abuse.get("categories") else ""))
+    if vt.get("ok"):
+        lines.append("VirusTotal: %d vendors call it malicious, %d suspicious, "
+                     "%d harmless"
+                     % (vt.get("malicious", 0), vt.get("suspicious", 0),
+                        vt.get("harmless", 0)))
+    if gn.get("ok"):
+        lines.append("GreyNoise: %s%s"
+                     % (gn.get("classification") or ("known good service"
+                                                     if gn.get("riot") else "not seen"),
+                        ", identified as %s" % gn["name"] if gn.get("name") else ""))
+    if dnsbl.get("ok"):
+        hits = dnsbl.get("listed") or []
+        lines.append("Blocklists: listed on %d of %d checked%s"
+                     % (len(hits), dnsbl.get("checked", 0),
+                        " (" + ", ".join(h["list"] for h in hits) + ")" if hits else ""))
+    if tor.get("ok"):
+        lines.append("Tor: %s"
+                     % ("this is a published Tor exit node" if tor.get("exit_node")
+                        else "not a Tor exit node"))
+    if urlscan.get("ok"):
+        lines.append("URLScan: %d pages scanned on this address, %d judged malicious"
+                     % (urlscan.get("total", 0), urlscan.get("malicious", 0)))
+
+    if res.get("reasons"):
+        lines.append("Scoring breakdown:")
+        for reason in res["reasons"]:
+            lines.append("  %+d %s" % (reason["weight"], reason["text"]))
+
+    skipped = [label for name, label, _fn, keyed in SOURCES
+               if keyed and (src.get(name) or {}).get("nokey")]
+    if skipped:
+        lines.append("Sources with no API key configured, so not consulted: %s"
+                     % ", ".join(skipped))
+    return "\n".join(lines)
+
+
+def ollama_host(cfg):
+    return (cfg.get("ollama_host") or os.environ.get("OLLAMA_HOST")
+            or OLLAMA_DEFAULT_HOST).rstrip("/")
+
+
+def ollama_up(cfg, timeout=2):
+    data, _status = http_json("%s/api/tags" % ollama_host(cfg), timeout=timeout)
+    return isinstance(data, dict) and "models" in data
+
+
+def ollama_models(cfg):
+    data, _status = http_json("%s/api/tags" % ollama_host(cfg), timeout=4)
+    if not isinstance(data, dict):
+        return []
+    return [m.get("name") for m in data.get("models") or [] if m.get("name")]
+
+
+def ai_ollama(prompt, cfg):
+    model = (cfg.get("ollama_model") or OLLAMA_DEFAULT_MODEL).strip()
+    available = ollama_models(cfg)
+    if available and model not in available:
+        base = [m for m in available if m.split(":")[0] == model.split(":")[0]]
+        model = base[0] if base else available[0]
+    body = json.dumps({
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0.2},
+        "messages": [
+            {"role": "system", "content": AI_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+    }).encode()
+    data, status = http_json("%s/api/chat" % ollama_host(cfg), timeout=AI_TIMEOUT,
+                             data=body, headers={"Content-Type": "application/json"})
+    if not isinstance(data, dict):
+        return None, "ollama did not answer (HTTP %s)" % status
+    if data.get("error"):
+        return None, "ollama: %s" % str(data["error"])[:140]
+    text = ((data.get("message") or {}).get("content") or "").strip()
+    if not text:
+        return None, "ollama returned an empty answer"
+    return {"text": text, "backend": "ollama", "model": model}, None
+
+
+def _glm_jwt(kid, secret):
+    def seg(raw):
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    now = int(time.time() * 1000)
+    head = seg(json.dumps({"alg": "HS256", "sign_type": "SIGN"},
+                          separators=(",", ":")).encode())
+    load = seg(json.dumps({"api_key": kid, "exp": now + 3600000, "timestamp": now},
+                          separators=(",", ":")).encode())
+    sig = seg(hmac.new(secret.encode(), ("%s.%s" % (head, load)).encode(),
+                       hashlib.sha256).digest())
+    return "%s.%s.%s" % (head, load, sig)
+
+
+def ai_glm(prompt, cfg):
+    api = key(cfg, "glm")
+    if not api:
+        return None, "no GLM API key"
+    model = (cfg.get("glm_model") or GLM_DEFAULT_MODEL).strip()
+    endpoints = [cfg.get("glm_endpoint") or GLM_DEFAULT_ENDPOINT]
+    if GLM_FALLBACK_ENDPOINT not in endpoints:
+        endpoints.append(GLM_FALLBACK_ENDPOINT)
+    body = json.dumps({
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": AI_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+    }).encode()
+
+    tokens = [api]
+    if "." in api:
+        kid, secret = api.split(".", 1)
+        tokens.append(_glm_jwt(kid, secret))
+
+    last = "GLM refused the request"
+    for endpoint in endpoints:
+        for token in tokens:
+            data, status = http_json(
+                endpoint, timeout=AI_TIMEOUT, data=body,
+                headers={"Content-Type": "application/json",
+                         "Authorization": "Bearer %s" % token})
+            choices = (data or {}).get("choices") or []
+            if choices:
+                text = ((choices[0].get("message") or {}).get("content") or "").strip()
+                if text:
+                    return {"text": text, "backend": "glm", "model": model}, None
+            err = ((data or {}).get("error") or {})
+            detail = err.get("message") or (data or {}).get("message")
+            last = "GLM %s: %s" % (status, detail or "no answer")
+            if status and status not in (401, 403):
+                return None, last
+    return None, last
+
+
+def ai_backends(cfg):
+    """Which backend to try, in order, for the configured preference."""
+    pref = (cfg.get("ai_backend") or os.environ.get("DRISHTI_AI_BACKEND")
+            or "auto").strip().lower()
+    if pref == "off":
+        return []
+    if pref in ("ollama", "glm"):
+        return [pref]
+    order = []
+    if ollama_up(cfg):
+        order.append("ollama")
+    if key(cfg, "glm"):
+        order.append("glm")
+    if not order:
+        order.append("ollama")
+    return order
+
+
+def explain(res, cfg, fresh=False):
+    """Plain English reading of a finished report. Returns the result dict."""
+    order = ai_backends(cfg)
+    if not order:
+        return {"ok": False, "error": "AI summary is switched off"}
+
+    prompt = "%s\n\n%s" % (ai_digest(res), AI_INSTRUCTION)
+    ck = "ai|%s|%s|%s" % (",".join(order), res.get("ip") or res.get("target"),
+                          res.get("score", 0))
+    if not fresh:
+        cached, ts = cache_get(ck)
+        if cached:
+            cached["cached"] = True
+            cached["cache_age_h"] = round((time.time() - ts) / 3600, 1)
+            return cached
+
+    problems = []
+    for backend in order:
+        started = time.time()
+        out, err = (ai_ollama if backend == "ollama" else ai_glm)(prompt, cfg)
+        if out:
+            out["ok"] = True
+            out["cached"] = False
+            out["elapsed"] = round(time.time() - started, 2)
+            if problems:
+                out["fell_back_from"] = problems
+            cache_put(ck, out)
+            return out
+        problems.append(err)
+    return {"ok": False, "error": "; ".join(problems),
+            "hint": "start Ollama with 'ollama serve' and pull a model, "
+                    "or add a GLM key with --keys"}
+
+
 # ---------------------------------------------------------------- page
 
 PAGE = r"""<!doctype html>
@@ -1015,6 +1304,12 @@ dialog footer{padding:14px 20px;border-top:1px solid var(--line);display:flex;ga
 .field .src{font-size:11.5px;color:var(--ink3);margin-top:5px}
 .field input{font-family:var(--mono);font-size:12.5px}
 
+.ai{white-space:pre-wrap;line-height:1.65;font-size:14px}
+.ai p{margin:0 0 12px}
+.aihead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+select{font:inherit;background:var(--panel2);border:1px solid var(--line2);color:var(--ink);
+  border-radius:8px;padding:7px 10px;outline:none}
+select:focus{border-color:var(--nido-line)}
 .spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line2);border-top-color:var(--nido);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .empty{color:var(--ink3);padding:34px 10px;text-align:center;font-size:13.5px}
@@ -1041,6 +1336,8 @@ dialog footer{padding:14px 20px;border-top:1px solid var(--line);display:flex;ga
   .v-SUSPICIOUS{color:#8a5a10;background:#fdf4e6;border-color:#e3cda1}
   .v-BENIGN{color:#1d6b45;background:#ecf7f1;border-color:#a9d5be}
   .v-INTERNAL{color:#1d4c8a;background:#eaf1fc;border-color:#a9c2e6}
+  .ai{color:#111}
+  .aihead button,.aihead select{display:none !important}
   .printhead{display:block !important}
 }
 .printhead{display:none;border-bottom:2px solid #C94B22;padding-bottom:6pt;margin-bottom:10pt}
@@ -1120,6 +1417,7 @@ const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
 const RISKY = [23,445,3389,1433,5900,3306,6379,27017,9200,11211,5432,21,512,2375,161];
 const ORDER = {MALICIOUS:0, SUSPICIOUS:1, ERROR:2, INTERNAL:3, BENIGN:4};
 let BULK = [];
+const CUR = {};
 let SORT = {col:"verdict", dir:1};
 
 async function api(path, opts){
@@ -1159,7 +1457,8 @@ function why(node){
   return "unavailable";
 }
 
-function renderResult(r){
+function renderResult(r, scope){
+  scope = scope || "single";
   const v = r.verdict || "ERROR", sc = r.score || 0, s = r.sources || {};
   const head = (r.hostname && r.ip) ? `${esc(r.hostname)} <span class="subtle">&rarr;</span> ${esc(r.ip)}`
                                     : esc(r.ip || r.target);
@@ -1185,7 +1484,18 @@ function renderResult(r){
   }
   out += `</div>`;
 
-  if(v === "INTERNAL" || v === "ERROR") return out;
+  CUR[scope] = r;
+  out += `<div class="card" id="ai-${scope}"><h3>In plain English</h3>
+    <div class="body">
+      <div class="aihead">
+        <button class="sm" onclick="aiExplain('${scope}')">Explain this report</button>
+        <span class="subtle">A local Ollama model, or GLM if Ollama is not running.</span>
+      </div>
+    </div></div>`;
+
+  if(v === "ERROR") return out;
+
+  if(v === "INTERNAL") return out;
 
   const geo = s.geo||{}, rdap = s.rdap||{}, rdns = s.rdns||{},
         idb = s.internetdb||{}, sho = s.shodan||{}, cen = s.censys||{},
@@ -1319,6 +1629,35 @@ $("#q").addEventListener("keydown", e => { if(e.key === "Enter") runSingle(); })
 
 async function exportOne(fmt){ await download(fmt, [window.LAST]); }
 
+async function aiExplain(scope, fresh){
+  const card = $("#ai-" + scope);
+  const result = CUR[scope];
+  if(!card || !result) return;
+  const body = card.querySelector(".body");
+  body.innerHTML = `<span class="spin"></span> &nbsp;<span class="subtle">reading the report</span>`;
+  try{
+    const r = await api("/api/explain", {method:"POST",
+      body: JSON.stringify({result, fresh: !!fresh})});
+    if(!r.ok){
+      body.innerHTML = `<div class="subtle">${esc(r.error || "no summary available")}</div>` +
+        (r.hint ? `<div class="subtle" style="margin-top:6px">${esc(r.hint)}</div>` : "") +
+        `<div class="aihead" style="margin-top:12px">
+           <button class="sm" onclick="aiExplain('${scope}')">Try again</button></div>`;
+      return;
+    }
+    const meta = `${esc(r.model||"")} via ${esc(r.backend||"")}` +
+      (r.cached ? `, cached ${r.cache_age_h||0}h ago` : (r.elapsed ? `, ${r.elapsed}s` : ""));
+    body.innerHTML = `<div class="ai">` +
+      String(r.text).split(/\n\s*\n/).map(x => `<p>${esc(x.trim())}</p>`).join("") +
+      `</div><div class="aihead" style="margin-top:6px">
+         <span class="subtle">${meta}</span>
+         <button class="sm" onclick="aiExplain('${scope}', true)">Rewrite</button>
+       </div>`;
+  }catch(e){
+    body.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
 /* ---------------------------------------------------------------- bulk */
 function parseTargets(text){
   const out = [];
@@ -1441,7 +1780,7 @@ function setSort(col){
 function showDetail(i){
   const r = sortRows(BULK)[i];
   $$("table.grid tbody tr").forEach(tr => tr.classList.toggle("sel", +tr.dataset.i === i));
-  $("#detail").innerHTML = renderResult(r);
+  $("#detail").innerHTML = renderResult(r, "detail");
   $("#detail").scrollIntoView({behavior:"smooth", block:"start"});
 }
 
@@ -1467,7 +1806,29 @@ const dlg = $("#dlg");
 $("#btn-settings").onclick = async () => {
   const cfg = await api("/api/config");
   $("#dlg-path").textContent = cfg.path;
-  $("#dlg-body").innerHTML = cfg.keys.map(k => `
+  const ai = cfg.ai || {};
+  const aiBlock = `
+    <div style="margin:6px 0 18px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--panel2)">
+      <div style="font-size:12.5px;font-weight:600;color:var(--ink2);margin-bottom:8px">Plain English summary</div>
+      <div class="subtle" style="margin-bottom:12px">
+        Ollama at ${esc(ai.ollama_host||"")} is
+        ${ai.ollama_up ? `<span class="chip ok">running</span>` : `<span class="chip off">not reachable</span>`}
+        ${(ai.ollama_models||[]).length ? "&nbsp;" + chips(ai.ollama_models.slice(0,6)) : ""}
+        <br>Order in use: ${esc((ai.backends||[]).join(" then ") || "off")}
+      </div>
+      ${(ai.settings||[]).map(x => `
+        <div class="field" style="margin-bottom:11px">
+          <label>${esc(x.label)}</label>
+          ${x.id === "ai_backend"
+            ? `<select data-set="${esc(x.id)}">` +
+                ["auto","ollama","glm","off"].map(o =>
+                  `<option value="${o}"${(x.value||"auto")===o?" selected":""}>${o}</option>`).join("") +
+              `</select>`
+            : `<input type="text" data-set="${esc(x.id)}" value="${esc(x.value)}"
+                      placeholder="${esc(x.default)}" autocomplete="off" spellcheck="false">`}
+        </div>`).join("")}
+    </div>`;
+  $("#dlg-body").innerHTML = aiBlock + cfg.keys.map(k => `
     <div class="field">
       <label>${esc(k.label)} ${k.set ? '<span class="chip ok">set</span>' : ""}
         ${k.from_env ? '<span class="chip">from environment</span>' : ""}</label>
@@ -1487,6 +1848,7 @@ $("#dlg-save").onclick = async () => {
     if(v === "-") body[inp.dataset.key] = "";
     else if(v) body[inp.dataset.key] = v;
   });
+  $$("#dlg-body [data-set]").forEach(inp => { body[inp.dataset.set] = inp.value.trim(); });
   await api("/api/config", {method:"POST", body: JSON.stringify(body)});
   dlg.close();
 };
@@ -1630,27 +1992,59 @@ def api_bulk():
 def api_config():
     cfg = load_config()
     if request.method == "GET":
+        up = ollama_up(cfg)
         return jsonify({
             "path": cfg.get("_path"),
+            "ai": {
+                "backends": ai_backends(cfg),
+                "ollama_up": up,
+                "ollama_host": ollama_host(cfg),
+                "ollama_models": ollama_models(cfg) if up else [],
+                "settings": [
+                    {"id": name, "label": label, "default": default,
+                     "value": cfg.get(name) or ""}
+                    for name, label, default in AI_SETTINGS
+                ],
+            },
             "keys": [
                 {"id": name, "label": label, "url": url,
                  "set": bool(key(cfg, name)),
                  "hint": mask(cfg.get(name) or ""),
                  "from_env": bool(not cfg.get(name)
                                   and os.environ.get("DRISHTI_" + name.upper()))}
-                for name, label, url in KEY_FIELDS
+                for name, label, url in KEY_FIELDS + AI_FIELDS
             ],
         })
     body = request.get_json(silent=True) or {}
-    for name, _label, _url in KEY_FIELDS:
+    for name, _label, _url in KEY_FIELDS + AI_FIELDS:
         if name in body:
             value = (body.get(name) or "").strip()
             if value == "":
                 cfg.pop(name, None)
             elif not value.startswith("•"):
                 cfg[name] = value
+    for name, _label, _default in AI_SETTINGS:
+        if name in body:
+            value = (body.get(name) or "").strip()
+            if value:
+                cfg[name] = value
+            else:
+                cfg.pop(name, None)
     path = save_config(cfg)
     return jsonify({"saved": True, "path": path})
+
+
+@app.route("/api/explain", methods=["POST"])
+def api_explain():
+    body = request.get_json(silent=True) or {}
+    result = body.get("result")
+    if not isinstance(result, dict) or not result.get("verdict"):
+        return jsonify({"ok": False, "error": "no report to explain"}), 400
+    cfg = load_config()
+    backend = (body.get("backend") or "").strip().lower()
+    if backend in ("auto", "ollama", "glm", "off"):
+        cfg["ai_backend"] = backend
+    return jsonify(explain(result, cfg, fresh=bool(body.get("fresh"))))
 
 
 @app.route("/api/export/<fmt>", methods=["POST"])
@@ -1741,6 +2135,7 @@ def main():
     print("  config  %s" % cfg.get("_path"))
     print("  cache   %s" % CACHE_PATH)
     print("  keys    %s" % (", ".join(ready) if ready else "none, keyless tier only"))
+    print("  ai      %s" % (", ".join(ai_backends(cfg)) or "off"))
     if port != DEFAULT_PORT:
         print("  note    %d was busy, moved to %d" % (DEFAULT_PORT, port))
     print("")

@@ -44,6 +44,8 @@ python3 Drishti_cli.py --keys
 | `--json` | raw JSON, no colour |
 | `--fresh` | bypass the 24 hour cache |
 | `-f FILE` | read targets from a file, one per line, `#` comments allowed |
+| `--ai` | add a plain English summary of the report |
+| `--ai-backend` | force `auto`, `ollama`, `glm` or `off` for that run |
 | `--no-colour` | plain text |
 
 More than one target prints a sorted summary table after the individual
@@ -99,6 +101,43 @@ from 60, with every contributing reason listed and weighted.
 Private, loopback, link local, multicast and reserved ranges short circuit as
 INTERNAL before any request goes out, so scanning your own subnet costs
 nothing in API quota. Hostnames and URLs resolve to an IP first.
+
+## Plain English summary
+
+A report tells you an address scored 25 and sits on one blocklist. It does not
+tell you what to do about it. The summary layer closes that gap. In the web UI
+every report has an Explain button. On the CLI it is the `--ai` flag.
+
+```
+python3 Drishti_cli.py --ai 45.155.205.233
+```
+
+Two backends. Ollama runs on your own machine and needs no key, so nothing
+about the address you looked up leaves the box. GLM is the cloud fallback for
+when Ollama is not running. The default is `auto`: use Ollama if it answers,
+otherwise GLM, otherwise say so and carry on.
+
+```
+ollama serve
+ollama pull llama3.2
+```
+
+Set the backend, host, model and GLM key in Settings in the web UI, or with
+`--keys` on the CLI. `ai_backend` accepts `auto`, `ollama`, `glm` or `off`.
+A GLM key can also come from the environment as `DRISHTI_GLM`. Both raw bearer
+and JWT signed authentication are attempted, and both the bigmodel.cn and
+z.ai endpoints are tried, so whichever form your key takes will work.
+
+The model never sees the raw source payload. It gets a compact factual brief
+built from the finished report: ownership, surface, each source's finding, the
+weighted scoring breakdown, and an explicit list of the sources that had no
+API key so it cannot imply coverage that did not happen. It is instructed to
+use only those facts. Summaries are cached alongside the report, keyed on the
+address and its score, so a re-read is instant and a changed score gets a
+fresh summary. Rewrite in the UI and `--fresh` on the CLI force a new one.
+
+Everything else works unchanged when no AI backend is available. The summary
+is an addition to the report, never a replacement for it.
 
 ## Cache
 

@@ -8,11 +8,17 @@ Standard library only. No pip install. Runs in a-Shell on iPhone.
     python3 Drishti_cli.py --me
     python3 Drishti_cli.py -f targets.txt --json
     python3 Drishti_cli.py --keys
+    python3 Drishti_cli.py --ai 45.155.205.233
+
+The --ai flag adds a plain English reading of the report. It talks to a local
+Ollama first and falls back to GLM in the cloud if Ollama is not running.
 """
 
 import argparse
 import base64
 import concurrent.futures as futures
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -50,6 +56,18 @@ KEY_FIELDS = [
     ("shodan", "Shodan", "https://account.shodan.io"),
     ("censys", "Censys (id:secret)", "https://search.censys.io/account/api"),
     ("securitytrails", "SecurityTrails", "https://securitytrails.com/app/account"),
+]
+
+# The plain English summary layer. Ollama runs locally and needs no key, GLM is
+# the cloud fallback. Preference lives in cfg["ai_backend"]: auto, ollama, glm, off.
+AI_FIELDS = [
+    ("glm", "GLM API key (cloud AI)", "https://open.bigmodel.cn/usercenter/apikeys"),
+]
+AI_SETTINGS = [
+    ("ai_backend", "AI backend: auto, ollama, glm or off", "auto"),
+    ("ollama_host", "Ollama host", "http://127.0.0.1:11434"),
+    ("ollama_model", "Ollama model", "llama3.2"),
+    ("glm_model", "GLM model", "glm-4-flash"),
 ]
 
 DNSBL_ZONES = [
@@ -861,6 +879,278 @@ def analyse(target, cfg, fresh=False, on_source=None):
     return res
 
 
+# ---------------------------------------------------------------- ai
+
+AI_TIMEOUT = 45
+OLLAMA_DEFAULT_HOST = "http://127.0.0.1:11434"
+OLLAMA_DEFAULT_MODEL = "llama3.2"
+GLM_DEFAULT_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+GLM_FALLBACK_ENDPOINT = "https://api.z.ai/api/paas/v4/chat/completions"
+GLM_DEFAULT_MODEL = "glm-4-flash"
+
+AI_SYSTEM = (
+    "You explain IP reputation reports to people who are not security "
+    "analysts. Use only the facts you are given. Never invent a detail, a "
+    "number or a source. If the report is thin, say the evidence is thin. "
+    "Write plain English. No jargon unless you define it in the same "
+    "sentence. No markdown, no bullet characters, no headings."
+)
+
+AI_INSTRUCTION = (
+    "Write three short paragraphs, each two sentences at most, separated by "
+    "a blank line.\n"
+    "1. What this address is and who runs it.\n"
+    "2. What the sources found and why that produced the verdict.\n"
+    "3. What the reader should do about it, concretely.\n"
+    "Do not repeat the raw numbers back as a list. Explain what they mean."
+)
+
+
+def ai_digest(res):
+    """Compact, factual brief for the model. Never send the raw source blob."""
+    src = res.get("sources") or {}
+    geo = src.get("geo") or {}
+    rdap = src.get("rdap") or {}
+    rdns = src.get("rdns") or {}
+    idb = src.get("internetdb") or {}
+    shodan = src.get("shodan") or {}
+    abuse = src.get("abuseipdb") or {}
+    vt = src.get("virustotal") or {}
+    gn = src.get("greynoise") or {}
+    dnsbl = src.get("dnsbl") or {}
+    tor = src.get("tor") or {}
+    urlscan = src.get("urlscan") or {}
+
+    ports = sorted(set((idb.get("ports") or []) + (shodan.get("ports") or [])))
+    vulns = sorted(set((idb.get("vulns") or []) + (shodan.get("vulns") or [])))
+    risky = [(p, RISKY_PORTS[p]) for p in ports if p in RISKY_PORTS]
+
+    lines = ["Address: %s" % (res.get("ip") or res.get("target"))]
+    if res.get("hostname"):
+        lines.append("Resolved from hostname: %s" % res["hostname"])
+    lines.append("Verdict: %s at %d out of 100 risk"
+                 % (res.get("verdict"), res.get("score", 0)))
+    if res.get("internal_kind"):
+        lines.append("This is a %s address, so no external source was queried."
+                     % res["internal_kind"])
+
+    if geo.get("ok"):
+        where = ", ".join(filter(None, [geo.get("city"), geo.get("country")]))
+        lines.append("Location: %s" % (where or "unknown"))
+        if geo.get("asn"):
+            lines.append("Network: AS%s %s" % (geo["asn"], geo.get("org") or ""))
+    if rdap.get("ok"):
+        if rdap.get("name"):
+            lines.append("Registry netname: %s" % rdap["name"])
+        if rdap.get("abuse"):
+            lines.append("Abuse contact: %s" % ", ".join(rdap["abuse"][:2]))
+    if rdns.get("ok"):
+        lines.append("Reverse DNS: %s" % (rdns.get("ptr") or "none set"))
+
+    if ports:
+        lines.append("Open ports: %s" % ", ".join(str(p) for p in ports[:20]))
+    if risky:
+        lines.append("Sensitive services exposed: %s"
+                     % ", ".join("%d %s" % (p, n) for p, n in risky[:8]))
+    if vulns:
+        lines.append("Known vulnerabilities on those services: %s"
+                     % ", ".join(vulns[:8]))
+
+    if abuse.get("ok"):
+        lines.append("AbuseIPDB: %d%% abuse confidence from %d reports by %d "
+                     "reporters%s"
+                     % (abuse.get("score", 0), abuse.get("reports", 0),
+                        abuse.get("distinct", 0),
+                        ", categories " + ", ".join(
+                            c["name"] for c in abuse.get("categories") or [])
+                        if abuse.get("categories") else ""))
+    if vt.get("ok"):
+        lines.append("VirusTotal: %d vendors call it malicious, %d suspicious, "
+                     "%d harmless"
+                     % (vt.get("malicious", 0), vt.get("suspicious", 0),
+                        vt.get("harmless", 0)))
+    if gn.get("ok"):
+        lines.append("GreyNoise: %s%s"
+                     % (gn.get("classification") or ("known good service"
+                                                     if gn.get("riot") else "not seen"),
+                        ", identified as %s" % gn["name"] if gn.get("name") else ""))
+    if dnsbl.get("ok"):
+        hits = dnsbl.get("listed") or []
+        lines.append("Blocklists: listed on %d of %d checked%s"
+                     % (len(hits), dnsbl.get("checked", 0),
+                        " (" + ", ".join(h["list"] for h in hits) + ")" if hits else ""))
+    if tor.get("ok"):
+        lines.append("Tor: %s"
+                     % ("this is a published Tor exit node" if tor.get("exit_node")
+                        else "not a Tor exit node"))
+    if urlscan.get("ok"):
+        lines.append("URLScan: %d pages scanned on this address, %d judged malicious"
+                     % (urlscan.get("total", 0), urlscan.get("malicious", 0)))
+
+    if res.get("reasons"):
+        lines.append("Scoring breakdown:")
+        for reason in res["reasons"]:
+            lines.append("  %+d %s" % (reason["weight"], reason["text"]))
+
+    skipped = [label for name, label, _fn, keyed in SOURCES
+               if keyed and (src.get(name) or {}).get("nokey")]
+    if skipped:
+        lines.append("Sources with no API key configured, so not consulted: %s"
+                     % ", ".join(skipped))
+    return "\n".join(lines)
+
+
+def ollama_host(cfg):
+    return (cfg.get("ollama_host") or os.environ.get("OLLAMA_HOST")
+            or OLLAMA_DEFAULT_HOST).rstrip("/")
+
+
+def ollama_up(cfg, timeout=2):
+    data, _status = http_json("%s/api/tags" % ollama_host(cfg), timeout=timeout)
+    return isinstance(data, dict) and "models" in data
+
+
+def ollama_models(cfg):
+    data, _status = http_json("%s/api/tags" % ollama_host(cfg), timeout=4)
+    if not isinstance(data, dict):
+        return []
+    return [m.get("name") for m in data.get("models") or [] if m.get("name")]
+
+
+def ai_ollama(prompt, cfg):
+    model = (cfg.get("ollama_model") or OLLAMA_DEFAULT_MODEL).strip()
+    available = ollama_models(cfg)
+    if available and model not in available:
+        base = [m for m in available if m.split(":")[0] == model.split(":")[0]]
+        model = base[0] if base else available[0]
+    body = json.dumps({
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0.2},
+        "messages": [
+            {"role": "system", "content": AI_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+    }).encode()
+    data, status = http_json("%s/api/chat" % ollama_host(cfg), timeout=AI_TIMEOUT,
+                             data=body, headers={"Content-Type": "application/json"})
+    if not isinstance(data, dict):
+        return None, "ollama did not answer (HTTP %s)" % status
+    if data.get("error"):
+        return None, "ollama: %s" % str(data["error"])[:140]
+    text = ((data.get("message") or {}).get("content") or "").strip()
+    if not text:
+        return None, "ollama returned an empty answer"
+    return {"text": text, "backend": "ollama", "model": model}, None
+
+
+def _glm_jwt(kid, secret):
+    def seg(raw):
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    now = int(time.time() * 1000)
+    head = seg(json.dumps({"alg": "HS256", "sign_type": "SIGN"},
+                          separators=(",", ":")).encode())
+    load = seg(json.dumps({"api_key": kid, "exp": now + 3600000, "timestamp": now},
+                          separators=(",", ":")).encode())
+    sig = seg(hmac.new(secret.encode(), ("%s.%s" % (head, load)).encode(),
+                       hashlib.sha256).digest())
+    return "%s.%s.%s" % (head, load, sig)
+
+
+def ai_glm(prompt, cfg):
+    api = key(cfg, "glm")
+    if not api:
+        return None, "no GLM API key"
+    model = (cfg.get("glm_model") or GLM_DEFAULT_MODEL).strip()
+    endpoints = [cfg.get("glm_endpoint") or GLM_DEFAULT_ENDPOINT]
+    if GLM_FALLBACK_ENDPOINT not in endpoints:
+        endpoints.append(GLM_FALLBACK_ENDPOINT)
+    body = json.dumps({
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": AI_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+    }).encode()
+
+    tokens = [api]
+    if "." in api:
+        kid, secret = api.split(".", 1)
+        tokens.append(_glm_jwt(kid, secret))
+
+    last = "GLM refused the request"
+    for endpoint in endpoints:
+        for token in tokens:
+            data, status = http_json(
+                endpoint, timeout=AI_TIMEOUT, data=body,
+                headers={"Content-Type": "application/json",
+                         "Authorization": "Bearer %s" % token})
+            choices = (data or {}).get("choices") or []
+            if choices:
+                text = ((choices[0].get("message") or {}).get("content") or "").strip()
+                if text:
+                    return {"text": text, "backend": "glm", "model": model}, None
+            err = ((data or {}).get("error") or {})
+            detail = err.get("message") or (data or {}).get("message")
+            last = "GLM %s: %s" % (status, detail or "no answer")
+            if status and status not in (401, 403):
+                return None, last
+    return None, last
+
+
+def ai_backends(cfg):
+    """Which backend to try, in order, for the configured preference."""
+    pref = (cfg.get("ai_backend") or os.environ.get("DRISHTI_AI_BACKEND")
+            or "auto").strip().lower()
+    if pref == "off":
+        return []
+    if pref in ("ollama", "glm"):
+        return [pref]
+    order = []
+    if ollama_up(cfg):
+        order.append("ollama")
+    if key(cfg, "glm"):
+        order.append("glm")
+    if not order:
+        order.append("ollama")
+    return order
+
+
+def explain(res, cfg, fresh=False):
+    """Plain English reading of a finished report. Returns the result dict."""
+    order = ai_backends(cfg)
+    if not order:
+        return {"ok": False, "error": "AI summary is switched off"}
+
+    prompt = "%s\n\n%s" % (ai_digest(res), AI_INSTRUCTION)
+    ck = "ai|%s|%s|%s" % (",".join(order), res.get("ip") or res.get("target"),
+                          res.get("score", 0))
+    if not fresh:
+        cached, ts = cache_get(ck)
+        if cached:
+            cached["cached"] = True
+            cached["cache_age_h"] = round((time.time() - ts) / 3600, 1)
+            return cached
+
+    problems = []
+    for backend in order:
+        started = time.time()
+        out, err = (ai_ollama if backend == "ollama" else ai_glm)(prompt, cfg)
+        if out:
+            out["ok"] = True
+            out["cached"] = False
+            out["elapsed"] = round(time.time() - started, 2)
+            if problems:
+                out["fell_back_from"] = problems
+            cache_put(ck, out)
+            return out
+        problems.append(err)
+    return {"ok": False, "error": "; ".join(problems),
+            "hint": "start Ollama with 'ollama serve' and pull a model, "
+                    "or add a GLM key with --keys"}
+
+
 # ---------------------------------------------------------------- render
 
 VERDICT_COLOUR = {
@@ -938,6 +1228,9 @@ def render(res, cfg):
         print("  %s %s" % (paint(col, mark), reason["text"]))
     if res.get("reasons"):
         print()
+
+    if res.get("ai"):
+        render_ai(res["ai"])
 
     if verdict in ("INTERNAL", "ERROR"):
         print(rule())
@@ -1074,6 +1367,45 @@ def render(res, cfg):
     print()
 
 
+def wrap(text, indent="  "):
+    limit = max(40, width() - len(indent) - 2)
+    out = []
+    for para in text.split("\n"):
+        para = para.strip()
+        if not para:
+            out.append("")
+            continue
+        line = ""
+        for word in para.split():
+            if line and len(line) + 1 + len(word) > limit:
+                out.append(indent + line)
+                line = word
+            else:
+                line = "%s %s" % (line, word) if line else word
+        if line:
+            out.append(indent + line)
+    return "\n".join(out)
+
+
+def render_ai(node):
+    print(head("  IN PLAIN ENGLISH"))
+    if not node.get("ok"):
+        print(paint(C.GREY, wrap(node.get("error") or "no summary available")))
+        if node.get("hint"):
+            print(paint(C.GREY, wrap(node["hint"])))
+        print()
+        return
+    print(wrap(node.get("text") or ""))
+    tail = "%s via %s" % (node.get("model", "?"), node.get("backend", "?"))
+    if node.get("cached"):
+        tail += ", cached %.1fh ago" % node.get("cache_age_h", 0)
+    elif node.get("elapsed"):
+        tail += ", %ss" % node["elapsed"]
+    print()
+    print(paint(C.GREY, "  %s" % tail))
+    print()
+
+
 def _skip(node):
     if node.get("nokey"):
         return "no API key"
@@ -1129,26 +1461,54 @@ def manage_keys(cfg):
     print(rule("="))
     print(paint(C.GREY, "  Enter to keep current, '-' to clear, then Enter through the rest."))
     print()
-    for name, label, url in KEY_FIELDS:
+    stopped = False
+    for name, label, url in KEY_FIELDS + AI_FIELDS:
+        if name == AI_FIELDS[0][0]:
+            print(head("  AI SUMMARY"))
         current = cfg.get(name) or ""
         shown = (current[:4] + "*" * max(0, len(current) - 8) + current[-4:]) if len(current) > 8 \
             else ("set" if current else paint(C.GREY, "not set"))
-        print("  %s  %s" % (paint(C.BOLD, "%-22s" % label), shown))
+        print("  %s  %s" % (paint(C.BOLD, "%-26s" % label), shown))
         print("  %s" % paint(C.GREY, url))
         try:
             entered = input("  > ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
+            stopped = True
             break
         if entered == "-":
             cfg[name] = ""
         elif entered:
             cfg[name] = entered
         print()
+
+    if not stopped:
+        for name, label, default in AI_SETTINGS:
+            current = cfg.get(name) or ""
+            print("  %s  %s" % (paint(C.BOLD, "%-26s" % label),
+                                current or paint(C.GREY, "default %s" % default)))
+            try:
+                entered = input("  > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if entered == "-":
+                cfg.pop(name, None)
+            elif entered:
+                cfg[name] = entered
+            print()
+
     path = save_config(cfg)
     print(paint(C.GREEN, "  Saved to %s" % path))
     active = [lbl for nm, lbl, _ in KEY_FIELDS if cfg.get(nm)]
-    print(paint(C.GREY, "  Active: %s" % (", ".join(active) if active else "none, keyless tier only")))
+    print(paint(C.GREY, "  Sources: %s" % (", ".join(active) if active else "none, keyless tier only")))
+    if ollama_up(cfg):
+        models = ollama_models(cfg)
+        print(paint(C.GREY, "  Ollama:  up at %s, models %s"
+                    % (ollama_host(cfg), ", ".join(models[:6]) or "none pulled yet")))
+    else:
+        print(paint(C.GREY, "  Ollama:  not reachable at %s" % ollama_host(cfg)))
+    print(paint(C.GREY, "  AI:      %s" % (", ".join(ai_backends(cfg)) or "off")))
     print()
 
 
@@ -1185,6 +1545,10 @@ def main(argv=None):
     parser.add_argument("--keys", action="store_true", help="add or update API keys")
     parser.add_argument("--json", action="store_true", help="raw JSON output, no colour")
     parser.add_argument("--fresh", action="store_true", help="bypass the 24 hour cache")
+    parser.add_argument("--ai", action="store_true",
+                        help="add a plain English summary from Ollama or GLM")
+    parser.add_argument("--ai-backend", choices=["auto", "ollama", "glm", "off"],
+                        help="force which AI backend --ai uses")
     parser.add_argument("-f", "--file", help="file of targets, one per line")
     parser.add_argument("--no-colour", action="store_true", help="disable ANSI colour")
     parser.add_argument("--version", action="version", version="%s %s" % (APP, VERSION))
@@ -1231,6 +1595,19 @@ def main(argv=None):
             results = list(pool.map(lambda t: analyse(t, cfg, args.fresh), ordered))
     else:
         results = [analyse(ordered[0], cfg, args.fresh)]
+
+    if args.ai:
+        if args.ai_backend:
+            cfg["ai_backend"] = args.ai_backend
+        if not args.json:
+            print(paint(C.GREY, "  writing the plain English summary ..."))
+        explainable = [r for r in results if r.get("verdict") not in ("ERROR",)]
+        if explainable:
+            with futures.ThreadPoolExecutor(max_workers=min(4, len(explainable))) as pool:
+                for res, node in zip(explainable,
+                                     pool.map(lambda r: explain(r, cfg, args.fresh),
+                                              explainable)):
+                    res["ai"] = node
 
     if args.json:
         payload = results[0] if len(results) == 1 else results
