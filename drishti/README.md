@@ -2,6 +2,21 @@
 
 IP and host intelligence from 13 sources. Two builds, one shared engine.
 
+Everything lives in this folder and the folder is the whole install. Copy it
+anywhere, run it there. Config and cache are created next to the scripts and
+stay out of git, so this repo is always a clean working backup of the code.
+
+New machine, first thing:
+
+```
+python3 selftest.py
+```
+
+22 checks in about twenty seconds: environment, imports, reachability of
+every keyless source, a real end to end lookup, the web routes on a live
+server, and the AI backends. Zero failures means Drishti works there.
+Warnings only mean reduced coverage, a missing key or Ollama not running.
+
 | | Drishti.py | Drishti_cli.py |
 |---|---|---|
 | Runs on | macOS, browser UI | a-Shell on iPhone, any terminal |
