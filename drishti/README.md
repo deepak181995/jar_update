@@ -6,7 +6,22 @@ Everything lives in this folder and the folder is the whole install. Copy it
 anywhere, run it there. Config and cache are created next to the scripts and
 stay out of git, so this repo is always a clean working backup of the code.
 
-New machine, first thing:
+New machine, one command:
+
+```
+./install.sh
+```
+
+It finds a usable Python, builds a private virtualenv in this folder for
+Flask, writes the launchers, then runs the self-test and tells you whether
+this machine can actually run Drishti. Re-running it is safe, it reuses what
+is already there. Add `--start` to launch the web app when it finishes.
+
+Nothing is installed system wide. The virtualenv, the launchers, the config
+and the cache all live in this folder and are all ignored by git, so a fresh
+clone is always a clean restore.
+
+To verify a machine on its own, without installing anything:
 
 ```
 python3 selftest.py
@@ -24,6 +39,12 @@ Warnings only mean reduced coverage, a missing key or Ollama not running.
 | Output | dark web UI, JSON, CSV, print to PDF | colour coded terminal report, JSON |
 
 ## Web build
+
+```
+./install.sh --start
+```
+
+Or by hand, if you would rather not use the installer:
 
 ```
 pip3 install flask
