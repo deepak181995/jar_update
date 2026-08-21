@@ -9,6 +9,7 @@ the current and previous year on a schedule, and fetches full alert detail
 on demand with caching. All content belongs to CERT-In; this API is a
 convenience layer and every response links back to the official source.
 """
+import http.cookiejar
 import json
 import logging
 import os
@@ -34,15 +35,18 @@ UA = "gec-certin-alerts/1.0 (public alert aggregation; contact curegloballlp@gma
 SOURCES = {
     "vulnerability_note": {
         "list": "/s2cMainServlet?pageid=VLNLIST02&year={year}",
+        "pager": "VulNotesList.jsp",
         "detail": "/s2cMainServlet?pageid=PUBVLNOTES01&VLCODE={code}",
         "prefix": "CIVN",
     },
     "advisory": {
         "list": "/s2cMainServlet?pageid=PUBADVLIST02&year={year}",
+        "pager": "Advisories.jsp",
         "detail": "/s2cMainServlet?pageid=PUBVLNOTES02&VLCODE={code}",
         "prefix": "CIAD",
     },
 }
+MAX_PAGES_PER_YEAR = 100
 
 app = FastAPI(
     title="CERT-In Alerts API",
@@ -148,16 +152,47 @@ def upsert_alerts(items: list[dict]):
 
 
 def refresh_year(year: int) -> int:
+    """Walk every page of both list types for a year.
+
+    CERT-In paginates through a session bound JSP: the year page seeds the
+    session, then <pager>.jsp?next=N serves subsequent pages, and requires
+    the session cookie plus a Referer header.
+    """
     total = 0
     for alert_type in SOURCES:
+        src = SOURCES[alert_type]
         try:
-            html = fetch(SOURCES[alert_type]["list"].format(year=year))
-            items = parse_list(html, alert_type)
-            upsert_alerts(items)
-            total += len(items)
+            jar = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            seed_url = BASE + src["list"].format(year=year)
+
+            def get(url, referer=None):
+                req = urllib.request.Request(url, headers={"User-Agent": UA})
+                if referer:
+                    req.add_header("Referer", referer)
+                with opener.open(req, timeout=FETCH_TIMEOUT) as resp:
+                    return resp.read().decode("utf-8", "replace")
+
+            html = get(seed_url)
+            seen_ids: set[str] = set()
+            offset = 0
+            for _ in range(MAX_PAGES_PER_YEAR):
+                items = [i for i in parse_list(html, alert_type) if i["id"] not in seen_ids]
+                if not items and seen_ids:
+                    break
+                upsert_alerts(items)
+                seen_ids.update(i["id"] for i in items)
+                total += len(items)
+                nexts = [int(n) for n in re.findall(rf'{src["pager"]}\?next=(\d+)', html)]
+                forward = [n for n in nexts if n > offset]
+                if not forward:
+                    break
+                offset = min(forward)
+                time.sleep(0.5)
+                html = get(f"{BASE}/{src['pager']}?next={offset}", referer=seed_url)
         except Exception as e:
             log.warning("List fetch failed %s %s: %s", alert_type, year, str(e)[:120])
-        time.sleep(1)
+        time.sleep(0.5)
     return total
 
 
