@@ -43,7 +43,7 @@ function UsageDash() {
         <div className="stat"><div className="n">{s.total_requests}</div><div className="l">API requests</div></div>
         <div className="stat"><div className="n">{s.active_customers}</div><div className="l">Active customers</div></div>
         <div className="stat"><div className="n">{s.error_rate_pct}%</div><div className="l">Error rate ({s.errors} errors)</div></div>
-        <div className="stat"><div className="n">{s.avg_response_ms} ms</div><div className="l">Average response · {fmtBytes(s.total_bytes_served)} served</div></div>
+        <div className="stat"><div className="n">{fmtBytes(s.total_bytes_served)}</div><div className="l">Data fetched · avg {s.avg_response_ms} ms</div></div>
       </div>
       <div className="card">
         <h2 style={{ fontSize: 15 }}>By customer</h2>
@@ -69,9 +69,9 @@ function UsageDash() {
           <h2 style={{ fontSize: 15 }}>Daily activity</h2>
           <div className="tablewrap" style={{ maxHeight: 320, overflowY: 'auto' }}>
             <table>
-              <thead><tr><th>Day</th><th>Requests</th><th>Errors</th></tr></thead>
+              <thead><tr><th>Day</th><th>Requests</th><th>Errors</th><th>Data fetched</th></tr></thead>
               <tbody>
-                {s.by_day.map(d => <tr key={d.day}><td>{d.day}</td><td>{d.requests}</td><td>{d.errors || 0}</td></tr>)}
+                {s.by_day.map(d => <tr key={d.day}><td>{d.day}</td><td>{d.requests}</td><td>{d.errors || 0}</td><td>{fmtBytes(d.bytes || 0)}</td></tr>)}
               </tbody>
             </table>
           </div>
@@ -136,7 +136,7 @@ function Usage() {
       {err && <div className="error">{err}</div>}
       <div className="card tablewrap">
         <table>
-          <thead><tr><th>When</th><th>Customer</th><th>Resource fetched</th><th>Status</th><th>Response provided</th><th>IP</th><th></th></tr></thead>
+          <thead><tr><th>When</th><th>Customer</th><th>Resource fetched</th><th>Status</th><th>Response provided</th><th>Data</th><th>IP</th><th></th></tr></thead>
           <tbody>
             {items.map(u => (
               <tr key={u.id}>
@@ -145,11 +145,12 @@ function Usage() {
                 <td style={{ maxWidth: 240, wordBreak: 'break-all' }}>{u.resource}</td>
                 <td>{u.status_code === 200 ? <span className="pill ok">200</span> : <span className="pill bad">{u.status_code}</span>}</td>
                 <td className="muted" style={{ maxWidth: 280 }}>{u.response_summary}</td>
+                <td className="muted" style={{ whiteSpace: 'nowrap' }}>{u.response_bytes >= 1024 ? (u.response_bytes/1024).toFixed(1)+' KB' : (u.response_bytes||0)+' B'}</td>
                 <td className="muted">{u.ip_address}</td>
                 <td><button className="btn sm ghost" disabled={busy} onClick={() => openEntry(u.id)}>View</button></td>
               </tr>
             ))}
-            {!items.length && <tr><td colSpan={7} className="muted">No customer requests logged yet.</td></tr>}
+            {!items.length && <tr><td colSpan={8} className="muted">No customer requests logged yet.</td></tr>}
           </tbody>
         </table>
       </div>

@@ -150,8 +150,9 @@ def usage_summary(days: int = Query(default=30, ge=1, le=90),
         pc["ms"] += r.duration_ms or 0
         if pc["last_seen"] is None:
             pc["last_seen"] = ts.isoformat() if ts else None
-        pd = per_day.setdefault(day, {"requests": 0, "errors": 0})
+        pd = per_day.setdefault(day, {"requests": 0, "errors": 0, "bytes": 0})
         pd["requests"] += 1
+        pd["bytes"] += r.response_bytes or 0
         base = (r.resource or "").split("?")[0]
         if base.startswith("/v1/certin/alerts/") and re.match(r'^/v1/certin/alerts/(CIVN|CIAD)-', base):
             base = "/v1/certin/alerts/{id}"
