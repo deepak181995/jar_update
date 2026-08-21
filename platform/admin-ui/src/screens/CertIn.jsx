@@ -4,7 +4,74 @@ import { api } from '../api.js'
 const SEV_CLASS = { CRITICAL: 'bad', HIGH: 'bad', MEDIUM: 'PENDING', LOW: 'ok' }
 
 export default function CertIn() {
-  const [stats, setStats] = useState(null)
+  const [view, setView] = useState('dashboard')
+  return (
+    <div>
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className={'btn sm ' + (view === 'dashboard' ? '' : 'ghost')} onClick={() => setView('dashboard')}>Dashboard</button>
+        <button className={'btn sm ' + (view === 'alerts' ? '' : 'ghost')} onClick={() => setView('alerts')}>Alerts</button>
+      </div>
+      {view === 'dashboard' ? <Dash /> : <Alerts />}
+    </div>
+  )
+}
+
+function Dash() {
+  const [s, setS] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => { api('GET', '/admin/api/certin/stats').then(setS).catch(e => setErr(e.message)) }, [])
+  if (err) return <div className="error">{err}</div>
+  if (!s) return <p className="muted">Loading…</p>
+
+  const months = Object.entries(s.by_month || {})
+  const thisMonth = months.length ? months[0][1].total : 0
+  const years = Object.entries(s.by_year || {})
+
+  return (
+    <div>
+      <h2>CERT-In dashboard</h2>
+      <p className="muted" style={{ marginBottom: 10 }}>
+        Publication activity of CERT-In (cert-in.org.in), indexed live.
+        Last refresh {s.last_refresh ? new Date(s.last_refresh).toLocaleString() : '—'}.
+      </p>
+      <div className="card grid g4">
+        <div className="stat"><div className="n">{s.total_alerts}</div><div className="l">Alerts indexed since 2003</div></div>
+        <div className="stat"><div className="n">{s.by_type?.advisory || 0}</div><div className="l">Advisories</div></div>
+        <div className="stat"><div className="n">{s.by_type?.vulnerability_note || 0}</div><div className="l">Vulnerability notes</div></div>
+        <div className="stat"><div className="n">{thisMonth}</div><div className="l">Published this month</div></div>
+      </div>
+      <div className="grid g2">
+        <div className="card">
+          <h2 style={{ fontSize: 15 }}>Last 12 months</h2>
+          <div className="tablewrap">
+            <table>
+              <thead><tr><th>Month</th><th>Advisories</th><th>Vuln notes</th><th>Total</th></tr></thead>
+              <tbody>
+                {months.map(([m, v]) => (
+                  <tr key={m}><td>{m}</td><td>{v.advisories}</td><td>{v.vulnerability_notes}</td><td><b>{v.total}</b></td></tr>
+                ))}
+                {!months.length && <tr><td colSpan={4} className="muted">No dated alerts yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="card">
+          <h2 style={{ fontSize: 15 }}>Archive by year</h2>
+          <div className="tablewrap" style={{ maxHeight: 420, overflowY: 'auto' }}>
+            <table>
+              <thead><tr><th>Year</th><th>Alerts</th></tr></thead>
+              <tbody>
+                {years.map(([y, c]) => <tr key={y}><td>{y}</td><td>{c}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Alerts() {
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [type, setType] = useState('')
@@ -28,11 +95,7 @@ export default function CertIn() {
       setItems(r.items); setTotal(r.total); setOffset(off)
     } catch (e) { setErr(e.message) }
   }
-
-  useEffect(() => {
-    api('GET', '/admin/api/certin/stats').then(setStats).catch(() => {})
-    load(0)
-  }, [type, year])
+  useEffect(() => { load(0) }, [type, year])
 
   async function openDetail(id) {
     setBusy(true); setErr('')
@@ -45,19 +108,7 @@ export default function CertIn() {
 
   return (
     <div>
-      <h2>CERT-In security alerts</h2>
-      <p className="muted" style={{ marginBottom: 10 }}>
-        Live index of advisories and vulnerability notes published by CERT-In (cert-in.org.in),
-        refreshed every 30 minutes. Click an alert for full detail.
-      </p>
-      {stats && (
-        <div className="card grid g4">
-          <div className="stat"><div className="n">{stats.total_alerts}</div><div className="l">Alerts indexed</div></div>
-          <div className="stat"><div className="n">{stats.by_type?.advisory || 0}</div><div className="l">Advisories</div></div>
-          <div className="stat"><div className="n">{stats.by_type?.vulnerability_note || 0}</div><div className="l">Vulnerability notes</div></div>
-          <div className="stat"><div className="n">{stats.all_years_indexed ? 'Complete' : 'Backfilling'}</div><div className="l">Archive since 2003</div></div>
-        </div>
-      )}
+      <h2>CERT-In alerts</h2>
       {err && <div className="error">{err}</div>}
       <div className="card">
         <div className="row" style={{ marginBottom: 10 }}>

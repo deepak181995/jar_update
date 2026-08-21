@@ -286,7 +286,15 @@ def stats():
                    conn.execute("SELECT type, count(*) c FROM alerts GROUP BY type")}
         years = {str(r["year"]): r["c"] for r in
                  conn.execute("SELECT year, count(*) c FROM alerts GROUP BY year ORDER BY year DESC")}
+        months = {r["m"]: {"total": r["c"], "advisories": r["a"], "vulnerability_notes": r["v"]}
+                  for r in conn.execute(
+                      """SELECT substr(date,1,7) m, count(*) c,
+                             sum(CASE WHEN type='advisory' THEN 1 ELSE 0 END) a,
+                             sum(CASE WHEN type='vulnerability_note' THEN 1 ELSE 0 END) v
+                         FROM alerts WHERE date != ''
+                         GROUP BY substr(date,1,7) ORDER BY m DESC LIMIT 12""")}
     return {"total_alerts": total, "by_type": by_type, "by_year": years,
+            "by_month": months,
             "last_refresh": _state["last_refresh"],
             "all_years_indexed": _state["backfill_done"]}
 
