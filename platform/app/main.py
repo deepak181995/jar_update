@@ -20,6 +20,7 @@ app = FastAPI(
     version="0.1.0",
     docs_url="/admin/api/docs" if ENV != "production" else None,
     redoc_url=None,
+    openapi_url=None if ENV == "production" else "/openapi.json",
 )
 
 
