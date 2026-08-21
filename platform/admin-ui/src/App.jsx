@@ -17,7 +17,7 @@ const TABS = [
   { id: 'quotes', label: 'Quotes', roles: ['administrator', 'operations', 'readonly'], C: Quotes },
   { id: 'rates', label: 'Rates', roles: ['administrator', 'operations', 'readonly'], C: Rates },
   { id: 'forwarders', label: 'Forwarders', roles: ['administrator', 'operations', 'readonly'], C: Forwarders },
-  { id: 'partners', label: 'Partners', roles: ['administrator'], C: Partners },
+  { id: 'partners', label: 'API Customers & Keys', roles: ['administrator'], C: Partners },
   { id: 'callbacks', label: 'Callbacks', roles: ['administrator', 'operations', 'readonly'], C: Callbacks },
   { id: 'users', label: 'Users', roles: ['administrator'], C: Users },
   { id: 'reports', label: 'Reports', roles: ['administrator', 'operations', 'readonly'], C: Reports },
