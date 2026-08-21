@@ -125,6 +125,67 @@ def usage_detail(entry_id: int, user=Depends(require_role(ROLE_ADMIN)),
     }
 
 
+@router.get("/usage-summary")
+def usage_summary(days: int = Query(default=30, ge=1, le=90),
+                  user=Depends(require_role(ROLE_ADMIN)), db: Session = Depends(get_db)):
+    from datetime import datetime, timedelta, timezone
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (db.query(models.CertinAccessLog)
+            .filter(models.CertinAccessLog.timestamp >= since)
+            .order_by(models.CertinAccessLog.id.desc()).limit(50000).all())
+    names = dict(db.query(models.CertinCustomer.id, models.CertinCustomer.name).all())
+
+    per_customer: dict = {}
+    per_day: dict = {}
+    per_resource: dict = {}
+    total_ms, total_bytes, errors = 0, 0, 0
+    for r in rows:
+        ts = r.timestamp
+        day = (ts.date().isoformat() if ts else "unknown")
+        cust = names.get(r.customer_id, "unknown")
+        pc = per_customer.setdefault(cust, {"requests": 0, "errors": 0, "bytes": 0,
+                                            "ms": 0, "last_seen": None})
+        pc["requests"] += 1
+        pc["bytes"] += r.response_bytes or 0
+        pc["ms"] += r.duration_ms or 0
+        if pc["last_seen"] is None:
+            pc["last_seen"] = ts.isoformat() if ts else None
+        pd = per_day.setdefault(day, {"requests": 0, "errors": 0})
+        pd["requests"] += 1
+        base = (r.resource or "").split("?")[0]
+        if base.startswith("/v1/certin/alerts/") and re.match(r'^/v1/certin/alerts/(CIVN|CIAD)-', base):
+            base = "/v1/certin/alerts/{id}"
+        per_resource[base] = per_resource.get(base, 0) + 1
+        total_ms += r.duration_ms or 0
+        total_bytes += r.response_bytes or 0
+        if r.status_code != 200:
+            errors += 1
+            pc["errors"] += 1
+            pd["errors"] += 1
+
+    n = len(rows)
+    customers_out = sorted(
+        [{"customer": k, "requests": v["requests"], "errors": v["errors"],
+          "avg_ms": round(v["ms"] / v["requests"]) if v["requests"] else 0,
+          "bytes": v["bytes"], "last_seen": v["last_seen"]}
+         for k, v in per_customer.items()],
+        key=lambda x: -x["requests"])
+    return {
+        "window_days": days,
+        "total_requests": n,
+        "active_customers": len([c for c in customers_out if c["customer"] != "unknown"]),
+        "errors": errors,
+        "error_rate_pct": round(100 * errors / n, 1) if n else 0.0,
+        "avg_response_ms": round(total_ms / n) if n else 0,
+        "total_bytes_served": total_bytes,
+        "by_customer": customers_out,
+        "by_day": [{"day": d, **v} for d, v in sorted(per_day.items(), reverse=True)[:31]],
+        "top_resources": sorted(
+            [{"resource": k, "requests": v} for k, v in per_resource.items()],
+            key=lambda x: -x["requests"])[:10],
+    }
+
+
 # ---------- CERT-In customer management (administrator only) ----------
 
 class CustomerIn(BaseModel):

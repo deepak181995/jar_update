@@ -11,9 +11,83 @@ export default function CertIn({ me }) {
       <div className="row" style={{ marginBottom: 14 }}>
         <button className={'btn sm ' + (view === 'dashboard' ? '' : 'ghost')} onClick={() => setView('dashboard')}>Dashboard</button>
         <button className={'btn sm ' + (view === 'alerts' ? '' : 'ghost')} onClick={() => setView('alerts')}>Alerts</button>
-        {isAdmin && <button className={'btn sm ' + (view === 'usage' ? '' : 'ghost')} onClick={() => setView('usage')}>Customer Usage</button>}
+        {isAdmin && <button className={'btn sm ' + (view === 'usage-dash' ? '' : 'ghost')} onClick={() => setView('usage-dash')}>Usage Dashboard</button>}
+        {isAdmin && <button className={'btn sm ' + (view === 'usage' ? '' : 'ghost')} onClick={() => setView('usage')}>Usage Log</button>}
       </div>
-      {view === 'dashboard' ? <Dash /> : view === 'usage' ? <Usage /> : <Alerts />}
+      {view === 'dashboard' ? <Dash /> : view === 'usage' ? <Usage /> : view === 'usage-dash' ? <UsageDash /> : <Alerts />}
+    </div>
+  )
+}
+
+function UsageDash() {
+  const [days, setDays] = useState(30)
+  const [s, setS] = useState(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    api('GET', `/admin/api/certin/usage-summary?days=${days}`).then(setS).catch(e => setErr(e.message))
+  }, [days])
+  if (err) return <div className="error">{err}</div>
+  if (!s) return <p className="muted">Loading…</p>
+  const fmtBytes = b => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : b + ' B'
+  return (
+    <div>
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+        <h2 style={{ margin: 0 }}>Customer usage dashboard</h2>
+        <select value={days} onChange={e => setDays(e.target.value)} style={{ maxWidth: 150 }}>
+          <option value={7}>Last 7 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
+      </div>
+      <div className="card grid g4">
+        <div className="stat"><div className="n">{s.total_requests}</div><div className="l">API requests</div></div>
+        <div className="stat"><div className="n">{s.active_customers}</div><div className="l">Active customers</div></div>
+        <div className="stat"><div className="n">{s.error_rate_pct}%</div><div className="l">Error rate ({s.errors} errors)</div></div>
+        <div className="stat"><div className="n">{s.avg_response_ms} ms</div><div className="l">Average response · {fmtBytes(s.total_bytes_served)} served</div></div>
+      </div>
+      <div className="card">
+        <h2 style={{ fontSize: 15 }}>By customer</h2>
+        <div className="tablewrap">
+          <table>
+            <thead><tr><th>Customer</th><th>Requests</th><th>Errors</th><th>Avg response</th><th>Data served</th><th>Last seen</th></tr></thead>
+            <tbody>
+              {s.by_customer.map(c => (
+                <tr key={c.customer}>
+                  <td><b>{c.customer}</b></td><td>{c.requests}</td>
+                  <td>{c.errors ? <span className="count red">{c.errors}</span> : 0}</td>
+                  <td>{c.avg_ms} ms</td><td>{fmtBytes(c.bytes)}</td>
+                  <td className="muted">{c.last_seen ? new Date(c.last_seen).toLocaleString() : '—'}</td>
+                </tr>
+              ))}
+              {!s.by_customer.length && <tr><td colSpan={6} className="muted">No requests in this window.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="grid g2">
+        <div className="card">
+          <h2 style={{ fontSize: 15 }}>Daily activity</h2>
+          <div className="tablewrap" style={{ maxHeight: 320, overflowY: 'auto' }}>
+            <table>
+              <thead><tr><th>Day</th><th>Requests</th><th>Errors</th></tr></thead>
+              <tbody>
+                {s.by_day.map(d => <tr key={d.day}><td>{d.day}</td><td>{d.requests}</td><td>{d.errors || 0}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="card">
+          <h2 style={{ fontSize: 15 }}>Most fetched resources</h2>
+          <div className="tablewrap">
+            <table>
+              <thead><tr><th>Resource</th><th>Requests</th></tr></thead>
+              <tbody>
+                {s.top_resources.map(r => <tr key={r.resource}><td style={{ wordBreak: 'break-all' }}>{r.resource}</td><td>{r.requests}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
