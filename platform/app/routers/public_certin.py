@@ -61,6 +61,22 @@ def _enforce_rate_limit(c: models.CertinCustomer):
                             headers={"Retry-After": "60"})
 
 
+def _log(db: Session, request: Request, customer: models.CertinCustomer,
+         resource: str, status: int, summary: str):
+    try:
+        ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "")
+        db.add(models.CertinAccessLog(
+            customer_id=customer.id, resource=resource[:512], status_code=status,
+            response_summary=summary[:512], ip_address=ip.split(",")[0].strip()[:64]))
+        # keep ninety days of usage history
+        from datetime import datetime, timedelta, timezone
+        db.query(models.CertinAccessLog).filter(
+            models.CertinAccessLog.timestamp < datetime.now(timezone.utc) - timedelta(days=90)).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
 def _relay(path: str) -> dict:
     req = urllib.request.Request(CERTIN_API_BASE + path,
                                  headers={"User-Agent": "gec-platform/1.0"})
@@ -78,30 +94,68 @@ def _relay(path: str) -> dict:
 
 
 @router.get("/alerts")
-def alerts(type: str = "", year: int = Query(default=0, ge=0, le=2100),
+def alerts(request: Request, type: str = "", year: int = Query(default=0, ge=0, le=2100),
            q: str = Query(default="", max_length=200),
            limit: int = Query(default=50, ge=1, le=200),
            offset: int = Query(default=0, ge=0),
-           customer: models.CertinCustomer = Depends(certin_auth)):
+           customer: models.CertinCustomer = Depends(certin_auth),
+           db: Session = Depends(get_db)):
     params = urllib.parse.urlencode(
         {k: v for k, v in [("type", type), ("year", year or ""), ("q", q),
                            ("limit", limit), ("offset", offset)] if v != ""})
-    return _relay(f"/v1/alerts?{params}")
+    resource = f"/v1/certin/alerts?{params}"
+    try:
+        out = _relay(f"/v1/alerts?{params}")
+    except HTTPException as e:
+        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200])
+        raise
+    _log(db, request, customer, resource, 200,
+         f"{out.get('total', 0)} matches, {out.get('count', 0)} returned")
+    return out
 
 
 @router.get("/alerts/latest")
-def latest(limit: int = Query(default=20, ge=1, le=100),
-           customer: models.CertinCustomer = Depends(certin_auth)):
-    return _relay(f"/v1/alerts/latest?limit={limit}")
+def latest(request: Request, limit: int = Query(default=20, ge=1, le=100),
+           customer: models.CertinCustomer = Depends(certin_auth),
+           db: Session = Depends(get_db)):
+    resource = f"/v1/certin/alerts/latest?limit={limit}"
+    try:
+        out = _relay(f"/v1/alerts/latest?limit={limit}")
+    except HTTPException as e:
+        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200])
+        raise
+    ids = ", ".join(i["id"] for i in out.get("items", [])[:5])
+    _log(db, request, customer, resource, 200, f"{out.get('count', 0)} alerts: {ids}")
+    return out
 
 
 @router.get("/alerts/{alert_id}")
-def alert_detail(alert_id: str, customer: models.CertinCustomer = Depends(certin_auth)):
+def alert_detail(request: Request, alert_id: str,
+                 customer: models.CertinCustomer = Depends(certin_auth),
+                 db: Session = Depends(get_db)):
     if not re.fullmatch(r'(?i)(CIVN|CIAD)-\d{4}-\d+', alert_id.strip()):
         raise HTTPException(422, "Alert id must look like CIVN-2026-0416 or CIAD-2026-0042")
-    return _relay(f"/v1/alerts/{urllib.parse.quote(alert_id.strip().upper())}")
+    aid = alert_id.strip().upper()
+    resource = f"/v1/certin/alerts/{aid}"
+    try:
+        out = _relay(f"/v1/alerts/{urllib.parse.quote(aid)}")
+    except HTTPException as e:
+        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200])
+        raise
+    _log(db, request, customer, resource, 200,
+         f"{out.get('id')} | {out.get('severity') or 'no severity'} | "
+         f"{len(out.get('cves', []))} CVEs | {out.get('title', '')[:120]}")
+    return out
 
 
 @router.get("/stats")
-def stats(customer: models.CertinCustomer = Depends(certin_auth)):
-    return _relay("/v1/stats")
+def stats(request: Request, customer: models.CertinCustomer = Depends(certin_auth),
+          db: Session = Depends(get_db)):
+    try:
+        out = _relay("/v1/stats")
+    except HTTPException as e:
+        _log(db, request, customer, "/v1/certin/stats", e.status_code, str(e.detail)[:200])
+        raise
+    _log(db, request, customer, "/v1/certin/stats", 200,
+         f"totals: {out.get('total_alerts')} alerts")
+    return out

@@ -68,6 +68,24 @@ def alert_detail(alert_id: str,
     return _relay(f"/v1/alerts/{urllib.parse.quote(alert_id.strip().upper())}")
 
 
+# ---------- Usage log (administrator only) ----------
+
+@router.get("/usage")
+def usage(customer_id: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=500),
+          user=Depends(require_role(ROLE_ADMIN)), db: Session = Depends(get_db)):
+    q = db.query(models.CertinAccessLog)
+    if customer_id:
+        q = q.filter(models.CertinAccessLog.customer_id == customer_id)
+    rows = q.order_by(models.CertinAccessLog.id.desc()).limit(limit).all()
+    names = dict(db.query(models.CertinCustomer.id, models.CertinCustomer.name).all())
+    return {"items": [{
+        "id": r.id, "customer": names.get(r.customer_id, "unknown"),
+        "customer_id": r.customer_id, "resource": r.resource,
+        "status_code": r.status_code, "response_summary": r.response_summary,
+        "ip_address": r.ip_address, "timestamp": r.timestamp,
+    } for r in rows]}
+
+
 # ---------- CERT-In customer management (administrator only) ----------
 
 class CustomerIn(BaseModel):

@@ -3,15 +3,73 @@ import { api } from '../api.js'
 
 const SEV_CLASS = { CRITICAL: 'bad', HIGH: 'bad', MEDIUM: 'PENDING', LOW: 'ok' }
 
-export default function CertIn() {
+export default function CertIn({ me }) {
   const [view, setView] = useState('dashboard')
+  const isAdmin = me?.role === 'administrator'
   return (
     <div>
       <div className="row" style={{ marginBottom: 14 }}>
         <button className={'btn sm ' + (view === 'dashboard' ? '' : 'ghost')} onClick={() => setView('dashboard')}>Dashboard</button>
         <button className={'btn sm ' + (view === 'alerts' ? '' : 'ghost')} onClick={() => setView('alerts')}>Alerts</button>
+        {isAdmin && <button className={'btn sm ' + (view === 'usage' ? '' : 'ghost')} onClick={() => setView('usage')}>Customer Usage</button>}
       </div>
-      {view === 'dashboard' ? <Dash /> : <Alerts />}
+      {view === 'dashboard' ? <Dash /> : view === 'usage' ? <Usage /> : <Alerts />}
+    </div>
+  )
+}
+
+function Usage() {
+  const [items, setItems] = useState([])
+  const [customers, setCustomers] = useState([])
+  const [cid, setCid] = useState('')
+  const [err, setErr] = useState('')
+
+  async function load() {
+    try {
+      const r = await api('GET', `/admin/api/certin/usage?limit=200${cid ? `&customer_id=${cid}` : ''}`)
+      setItems(r.items)
+    } catch (e) { setErr(e.message) }
+  }
+  useEffect(() => {
+    api('GET', '/admin/api/certin/customers').then(r => setCustomers(r.items)).catch(() => {})
+  }, [])
+  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t) }, [cid])
+
+  return (
+    <div>
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+        <h2 style={{ margin: 0 }}>Customer usage</h2>
+        <div className="row">
+          <select value={cid} onChange={e => setCid(e.target.value)} style={{ maxWidth: 240 }}>
+            <option value="">All customers</option>
+            {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <button className="btn sm ghost" onClick={load}>Refresh</button>
+        </div>
+      </div>
+      <p className="muted" style={{ marginBottom: 10 }}>
+        Every API call by CERT-In data customers: who fetched which resource and what was returned.
+        Retained for 90 days.
+      </p>
+      {err && <div className="error">{err}</div>}
+      <div className="card tablewrap">
+        <table>
+          <thead><tr><th>When</th><th>Customer</th><th>Resource fetched</th><th>Status</th><th>Response provided</th><th>IP</th></tr></thead>
+          <tbody>
+            {items.map(u => (
+              <tr key={u.id}>
+                <td className="muted" style={{ whiteSpace: 'nowrap' }}>{new Date(u.timestamp).toLocaleString()}</td>
+                <td><b>{u.customer}</b></td>
+                <td style={{ maxWidth: 260, wordBreak: 'break-all' }}>{u.resource}</td>
+                <td>{u.status_code === 200 ? <span className="pill ok">200</span> : <span className="pill bad">{u.status_code}</span>}</td>
+                <td className="muted" style={{ maxWidth: 300 }}>{u.response_summary}</td>
+                <td className="muted">{u.ip_address}</td>
+              </tr>
+            ))}
+            {!items.length && <tr><td colSpan={6} className="muted">No customer requests logged yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

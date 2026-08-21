@@ -98,6 +98,17 @@ class CertinCustomer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class CertinAccessLog(Base):
+    __tablename__ = "certin_access_log"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("certin_customers.id"), nullable=True, index=True)
+    resource: Mapped[str] = mapped_column(String(512))
+    status_code: Mapped[int] = mapped_column(Integer, default=200)
+    response_summary: Mapped[str] = mapped_column(String(512), default="")
+    ip_address: Mapped[str] = mapped_column(String(64), default="")
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 class QuoteRequest(Base):
     __tablename__ = "quote_requests"
     id: Mapped[int] = mapped_column(primary_key=True)
