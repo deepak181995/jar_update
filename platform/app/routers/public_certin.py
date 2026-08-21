@@ -36,6 +36,8 @@ def certin_auth(request: Request, x_api_key: str = Header(default=""),
         key = auth[7:]
     if not key:
         raise HTTPException(401, "Missing API key. Send it in the X-API-Key header.")
+    from .public_quotes import _throttle_ip
+    _throttle_ip(request)
     for c in db.query(models.CertinCustomer).filter(models.CertinCustomer.is_active.is_(True)).all():
         for h in (c.api_key_hash, c.api_key_hash_secondary):
             try:

@@ -26,6 +26,12 @@ app = FastAPI(
 
 @app.on_event("startup")
 def startup():
+    if ENV == "production":
+        from .config import SECRET_KEY as _sk, ADMIN_INITIAL_PASSWORD as _pw
+        if _sk in ("", "dev-only-secret"):
+            raise RuntimeError("Refusing to start in production without a strong SECRET_KEY")
+        if _pw in ("", "changeme"):
+            raise RuntimeError("Refusing to start in production with the default ADMIN_INITIAL_PASSWORD")
     Base.metadata.create_all(bind=engine)
     # Additive migrations for columns introduced after first release.
     if engine.dialect.name == "postgresql":

@@ -21,6 +21,28 @@ from ..db import get_db
 from ..sla import deadline_for_tier
 
 SIGNATURE_WINDOW_SECONDS = 300
+# Seen signatures within the window, for replay rejection: {signature: expiry_epoch}
+_seen_signatures: dict[str, float] = {}
+# Per-IP attempt throttle to bound bcrypt work from unauthenticated traffic.
+_ip_attempts: dict[str, list] = {}
+IP_MAX_PER_MINUTE = 120
+
+
+def _throttle_ip(request: Request):
+    ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "")
+    ip = ip.split(",")[0].strip() or "unknown"
+    now = int(time.time() // 60)
+    win = _ip_attempts.get(ip)
+    if not win or win[0] != now:
+        _ip_attempts[ip] = [now, 1]
+        if len(_ip_attempts) > 10000:
+            for k in [k for k, v in _ip_attempts.items() if v[0] != now]:
+                _ip_attempts.pop(k, None)
+        return
+    win[1] += 1
+    if win[1] > IP_MAX_PER_MINUTE:
+        raise HTTPException(429, "Too many requests from this source. Slow down.",
+                            headers={"Retry-After": "60"})
 
 router = APIRouter(prefix="/v1", tags=["partner"])
 
@@ -38,6 +60,7 @@ async def partner_auth(request: Request, x_api_key: str = Header(default=""),
         key = auth[7:]
     if not key:
         raise HTTPException(401, "Missing API key. Send it in the X-API-Key header.")
+    _throttle_ip(request)
     for p in db.query(models.Partner).filter(models.Partner.is_active.is_(True)).all():
         for h in (p.api_key_hash, p.api_key_hash_secondary):
             try:
@@ -58,7 +81,8 @@ async def _verify_signature(request: Request, p: models.Partner):
 
     X-GEC-Timestamp: unix seconds
     X-GEC-Signature: hex HMAC-SHA256(signing_secret,
-                     "{timestamp}.{METHOD}.{path}.{raw_body}")
+                     "{timestamp}.{METHOD}.{path_and_query}.{raw_body}")
+    Each signature is accepted once within a five minute window.
     """
     if not p.api_signing_secret:
         raise HTTPException(401, "Signing not provisioned for this account. Contact GEC.")
@@ -73,10 +97,21 @@ async def _verify_signature(request: Request, p: models.Partner):
     if skew > SIGNATURE_WINDOW_SECONDS:
         raise HTTPException(401, "Request timestamp outside the allowed window")
     body = await request.body()
-    base = f"{ts}.{request.method}.{request.url.path}.".encode() + body
+    qs = request.url.query
+    path_and_query = request.url.path + (("?" + qs) if qs else "")
+    base = f"{ts}.{request.method}.{path_and_query}.".encode() + body
     expected = hmac_mod.new(p.api_signing_secret.encode(), base, hashlib.sha256).hexdigest()
     if not hmac_mod.compare_digest(expected, sig.strip().lower()):
         raise HTTPException(401, "Invalid request signature")
+    # Replay rejection: a signature may be used once within its window.
+    now = time.time()
+    for old, exp in list(_seen_signatures.items()):
+        if exp < now:
+            _seen_signatures.pop(old, None)
+    key = f"{p.id}:{sig.strip().lower()}"
+    if key in _seen_signatures:
+        raise HTTPException(401, "Request signature already used (replay rejected)")
+    _seen_signatures[key] = now + SIGNATURE_WINDOW_SECONDS
 
 
 def _enforce_rate_limit(p: models.Partner):

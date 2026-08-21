@@ -52,6 +52,13 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
         import secrets as sec
         from datetime import datetime, timedelta, timezone
         from ..config import SECRET_KEY
+        # Throttle re-issuance: at most one fresh code per 45 seconds while one is live.
+        exp = user.otp_expires_at
+        if exp is not None and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp and exp - timedelta(minutes=OTP_MINUTES) + timedelta(seconds=45) > datetime.now(timezone.utc) \
+                and (user.otp_attempts or 0) == 0 and user.otp_hash:
+            return {"step": "verify_otp", "pre_token": pre}
         code = f"{sec.randbelow(1000000):06d}"
         user.otp_hash = hmac_mod.new(SECRET_KEY.encode(), code.encode(), hashlib.sha256).hexdigest()
         user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_MINUTES)
@@ -88,6 +95,8 @@ class EnrolIn(BaseModel):
 
 @router.post("/enrol")
 def enrol(body: EnrolIn, request: Request, db: Session = Depends(get_db)):
+    if TWO_FA_MODE != "totp":
+        raise HTTPException(403, "Authenticator enrolment is not enabled")
     payload = decode_token(body.pre_token, scope="pre-2fa")
     user = db.get(models.AdminUser, int(payload["sub"]))
     if not user or not user.is_active:
@@ -104,6 +113,8 @@ def enrol(body: EnrolIn, request: Request, db: Session = Depends(get_db)):
 
 @router.post("/verify")
 def verify(body: TotpIn, request: Request, db: Session = Depends(get_db)):
+    if TWO_FA_MODE != "totp":
+        raise HTTPException(403, "Authenticator verification is not enabled")
     payload = decode_token(body.pre_token, scope="pre-2fa")
     user = db.get(models.AdminUser, int(payload["sub"]))
     if not user or not user.is_active:
