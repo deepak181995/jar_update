@@ -9,6 +9,7 @@ import Partners from './screens/Partners.jsx'
 import Users from './screens/Users.jsx'
 import Reports from './screens/Reports.jsx'
 import Callbacks from './screens/Callbacks.jsx'
+import CertIn from './screens/CertIn.jsx'
 import Audit from './screens/Audit.jsx'
 
 const TABS = [
@@ -20,6 +21,7 @@ const TABS = [
   { id: 'callbacks', label: 'Callbacks', roles: ['administrator', 'operations', 'readonly'], C: Callbacks },
   { id: 'users', label: 'Users', roles: ['administrator'], C: Users },
   { id: 'reports', label: 'Reports', roles: ['administrator', 'operations', 'readonly'], C: Reports },
+  { id: 'certin', label: 'CERT-In', roles: ['administrator', 'operations', 'readonly'], C: CertIn },
   { id: 'audit', label: 'Audit Log', roles: ['administrator'], C: Audit },
 ]
 
