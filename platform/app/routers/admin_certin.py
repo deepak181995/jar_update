@@ -7,12 +7,19 @@ users of any role.
 import json
 import os
 import re
+import secrets
 import urllib.parse
 import urllib.request
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from passlib.hash import bcrypt
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
+from .. import models
+from ..audit import audit
 from ..auth import ROLE_ADMIN, ROLE_OPS, ROLE_READONLY, require_role
+from ..db import get_db
 
 router = APIRouter(prefix="/admin/api/certin", tags=["admin-certin"])
 
@@ -59,3 +66,79 @@ def alert_detail(alert_id: str,
     if not re.fullmatch(r'(?i)(CIVN|CIAD)-\d{4}-\d+', alert_id.strip()):
         raise HTTPException(422, "Invalid alert id")
     return _relay(f"/v1/alerts/{urllib.parse.quote(alert_id.strip().upper())}")
+
+
+# ---------- CERT-In customer management (administrator only) ----------
+
+class CustomerIn(BaseModel):
+    name: str = Field(max_length=255)
+    contact_email: str = Field(default="", max_length=255)
+    rate_limit: int = Field(default=120, ge=1, le=6000)
+    is_active: bool = True
+
+
+def customer_out(c: models.CertinCustomer) -> dict:
+    return {"id": c.id, "name": c.name, "contact_email": c.contact_email,
+            "rate_limit": c.rate_limit, "is_active": c.is_active,
+            "has_api_key": bool(c.api_key_hash),
+            "has_secondary_key": bool(c.api_key_hash_secondary),
+            "created_at": c.created_at}
+
+
+@router.get("/customers")
+def list_customers(user=Depends(require_role(ROLE_ADMIN)), db: Session = Depends(get_db)):
+    return {"items": [customer_out(c) for c in
+                      db.query(models.CertinCustomer).order_by(models.CertinCustomer.name).all()]}
+
+
+@router.post("/customers")
+def create_customer(body: CustomerIn, request: Request,
+                    user=Depends(require_role(ROLE_ADMIN)), db: Session = Depends(get_db)):
+    c = models.CertinCustomer(**body.model_dump())
+    db.add(c)
+    db.commit()
+    audit(db, request, user, "certin_customer_created", "certin_customer", c.id, new=customer_out(c))
+    return customer_out(c)
+
+
+@router.put("/customers/{cid}")
+def update_customer(cid: int, body: CustomerIn, request: Request,
+                    user=Depends(require_role(ROLE_ADMIN)), db: Session = Depends(get_db)):
+    c = db.get(models.CertinCustomer, cid)
+    if not c:
+        raise HTTPException(404, "Customer not found")
+    old = customer_out(c)
+    for k, v in body.model_dump().items():
+        setattr(c, k, v)
+    db.commit()
+    audit(db, request, user, "certin_customer_updated", "certin_customer", c.id, old=old, new=customer_out(c))
+    return customer_out(c)
+
+
+@router.post("/customers/{cid}/generate-key")
+def generate_customer_key(cid: int, request: Request, rotate: bool = False,
+                          user=Depends(require_role(ROLE_ADMIN)), db: Session = Depends(get_db)):
+    c = db.get(models.CertinCustomer, cid)
+    if not c:
+        raise HTTPException(404, "Customer not found")
+    key = "gec_certin_" + secrets.token_urlsafe(32)
+    if rotate and c.api_key_hash:
+        c.api_key_hash_secondary = c.api_key_hash
+    else:
+        c.api_key_hash_secondary = None
+    c.api_key_hash = bcrypt.hash(key)
+    db.commit()
+    audit(db, request, user, "certin_key_generated", "certin_customer", c.id, new={"rotate": rotate})
+    return {"api_key": key, "note": "Store this key now. It is not retrievable later."}
+
+
+@router.post("/customers/{cid}/retire-old-key")
+def retire_customer_key(cid: int, request: Request,
+                        user=Depends(require_role(ROLE_ADMIN)), db: Session = Depends(get_db)):
+    c = db.get(models.CertinCustomer, cid)
+    if not c:
+        raise HTTPException(404, "Customer not found")
+    c.api_key_hash_secondary = None
+    db.commit()
+    audit(db, request, user, "certin_old_key_retired", "certin_customer", c.id)
+    return {"ok": True}

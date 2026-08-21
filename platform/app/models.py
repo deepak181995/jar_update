@@ -86,6 +86,18 @@ class Partner(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class CertinCustomer(Base):
+    __tablename__ = "certin_customers"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    contact_email: Mapped[str] = mapped_column(String(255), default="")
+    api_key_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    api_key_hash_secondary: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rate_limit: Mapped[int] = mapped_column(Integer, default=120)  # requests per minute
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class QuoteRequest(Base):
     __tablename__ = "quote_requests"
     id: Mapped[int] = mapped_column(primary_key=True)

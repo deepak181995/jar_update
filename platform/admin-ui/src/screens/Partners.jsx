@@ -22,14 +22,12 @@ export default function Partners() {
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-        <h2 style={{ margin: 0 }}>API customers and keys</h2>
-        <button className="btn accent" onClick={() => setEdit({ ...EMPTY })}>New customer</button>
+        <h2 style={{ margin: 0 }}>Freight partners and keys</h2>
+        <button className="btn accent" onClick={() => setEdit({ ...EMPTY })}>New partner</button>
       </div>
       <p className="muted" style={{ marginBottom: 12 }}>
-        Manage every organisation that calls your APIs, freight partners and CERT-In data customers alike.
-        Each customer gets an API key (generate or rotate below, shown once) that opens both the
-        Quotation API (/v1/quotes) and the CERT-In Alerts API (/v1/certin) on
-        api.globalexportconsultancy.com, with the rate limit and environment you set here.
+        Marketplace partners of the freight Quotation API (/v1/quotes). Their keys open freight
+        endpoints only. CERT-In data customers are managed separately under CERT-In Customers.
       </p>
       {err && <div className="error">{err}</div>}
       {keyInfo && (

@@ -10,6 +10,7 @@ import Users from './screens/Users.jsx'
 import Reports from './screens/Reports.jsx'
 import Callbacks from './screens/Callbacks.jsx'
 import CertIn from './screens/CertIn.jsx'
+import CertinCustomers from './screens/CertinCustomers.jsx'
 import Audit from './screens/Audit.jsx'
 
 const TABS = [
@@ -17,11 +18,12 @@ const TABS = [
   { id: 'quotes', label: 'Quotes', roles: ['administrator', 'operations', 'readonly'], C: Quotes },
   { id: 'rates', label: 'Rates', roles: ['administrator', 'operations', 'readonly'], C: Rates },
   { id: 'forwarders', label: 'Forwarders', roles: ['administrator', 'operations', 'readonly'], C: Forwarders },
-  { id: 'partners', label: 'API Customers & Keys', roles: ['administrator'], C: Partners },
+  { id: 'partners', label: 'Freight Partners', roles: ['administrator'], C: Partners },
   { id: 'callbacks', label: 'Callbacks', roles: ['administrator', 'operations', 'readonly'], C: Callbacks },
   { id: 'users', label: 'Users', roles: ['administrator'], C: Users },
   { id: 'reports', label: 'Reports', roles: ['administrator', 'operations', 'readonly'], C: Reports },
   { id: 'certin', label: 'CERT-In', roles: ['administrator', 'operations', 'readonly'], C: CertIn },
+  { id: 'certin-customers', label: 'CERT-In Customers', roles: ['administrator'], C: CertinCustomers },
   { id: 'audit', label: 'Audit Log', roles: ['administrator'], C: Audit },
 ]
 
