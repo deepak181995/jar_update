@@ -61,13 +61,24 @@ def _enforce_rate_limit(c: models.CertinCustomer):
                             headers={"Retry-After": "60"})
 
 
+MAX_STORED_BODY = 80_000  # characters of response body kept per log entry
+
+
 def _log(db: Session, request: Request, customer: models.CertinCustomer,
-         resource: str, status: int, summary: str):
+         resource: str, status: int, summary: str, body: dict | None = None,
+         duration_ms: int = 0):
     try:
         ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "")
+        raw = json.dumps(body, default=str) if body is not None else ""
+        stored = raw
+        if len(stored) > MAX_STORED_BODY:
+            stored = stored[:MAX_STORED_BODY] + f'... [truncated, full size {len(raw)} chars]'
         db.add(models.CertinAccessLog(
             customer_id=customer.id, resource=resource[:512], status_code=status,
-            response_summary=summary[:512], ip_address=ip.split(",")[0].strip()[:64]))
+            response_summary=summary[:512], response_body=stored,
+            response_bytes=len(raw), duration_ms=duration_ms,
+            user_agent=request.headers.get("user-agent", "")[:256],
+            ip_address=ip.split(",")[0].strip()[:64]))
         # keep ninety days of usage history
         from datetime import datetime, timedelta, timezone
         db.query(models.CertinAccessLog).filter(
@@ -104,13 +115,16 @@ def alerts(request: Request, type: str = "", year: int = Query(default=0, ge=0, 
         {k: v for k, v in [("type", type), ("year", year or ""), ("q", q),
                            ("limit", limit), ("offset", offset)] if v != ""})
     resource = f"/v1/certin/alerts?{params}"
+    t0 = time.time()
     try:
         out = _relay(f"/v1/alerts?{params}")
     except HTTPException as e:
-        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200])
+        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200],
+             duration_ms=int((time.time() - t0) * 1000))
         raise
     _log(db, request, customer, resource, 200,
-         f"{out.get('total', 0)} matches, {out.get('count', 0)} returned")
+         f"{out.get('total', 0)} matches, {out.get('count', 0)} returned",
+         body=out, duration_ms=int((time.time() - t0) * 1000))
     return out
 
 
@@ -119,13 +133,16 @@ def latest(request: Request, limit: int = Query(default=20, ge=1, le=100),
            customer: models.CertinCustomer = Depends(certin_auth),
            db: Session = Depends(get_db)):
     resource = f"/v1/certin/alerts/latest?limit={limit}"
+    t0 = time.time()
     try:
         out = _relay(f"/v1/alerts/latest?limit={limit}")
     except HTTPException as e:
-        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200])
+        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200],
+             duration_ms=int((time.time() - t0) * 1000))
         raise
     ids = ", ".join(i["id"] for i in out.get("items", [])[:5])
-    _log(db, request, customer, resource, 200, f"{out.get('count', 0)} alerts: {ids}")
+    _log(db, request, customer, resource, 200, f"{out.get('count', 0)} alerts: {ids}",
+         body=out, duration_ms=int((time.time() - t0) * 1000))
     return out
 
 
@@ -137,25 +154,31 @@ def alert_detail(request: Request, alert_id: str,
         raise HTTPException(422, "Alert id must look like CIVN-2026-0416 or CIAD-2026-0042")
     aid = alert_id.strip().upper()
     resource = f"/v1/certin/alerts/{aid}"
+    t0 = time.time()
     try:
         out = _relay(f"/v1/alerts/{urllib.parse.quote(aid)}")
     except HTTPException as e:
-        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200])
+        _log(db, request, customer, resource, e.status_code, str(e.detail)[:200],
+             duration_ms=int((time.time() - t0) * 1000))
         raise
     _log(db, request, customer, resource, 200,
          f"{out.get('id')} | {out.get('severity') or 'no severity'} | "
-         f"{len(out.get('cves', []))} CVEs | {out.get('title', '')[:120]}")
+         f"{len(out.get('cves', []))} CVEs | {out.get('title', '')[:120]}",
+         body=out, duration_ms=int((time.time() - t0) * 1000))
     return out
 
 
 @router.get("/stats")
 def stats(request: Request, customer: models.CertinCustomer = Depends(certin_auth),
           db: Session = Depends(get_db)):
+    t0 = time.time()
     try:
         out = _relay("/v1/stats")
     except HTTPException as e:
-        _log(db, request, customer, "/v1/certin/stats", e.status_code, str(e.detail)[:200])
+        _log(db, request, customer, "/v1/certin/stats", e.status_code, str(e.detail)[:200],
+             duration_ms=int((time.time() - t0) * 1000))
         raise
     _log(db, request, customer, "/v1/certin/stats", 200,
-         f"totals: {out.get('total_alerts')} alerts")
+         f"totals: {out.get('total_alerts')} alerts",
+         body=out, duration_ms=int((time.time() - t0) * 1000))
     return out

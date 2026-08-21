@@ -23,6 +23,14 @@ function Usage() {
   const [customers, setCustomers] = useState([])
   const [cid, setCid] = useState('')
   const [err, setErr] = useState('')
+  const [entry, setEntry] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  async function openEntry(id) {
+    setBusy(true); setErr('')
+    try { setEntry(await api('GET', `/admin/api/certin/usage/${id}`)) }
+    catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
 
   async function load() {
     try {
@@ -54,21 +62,66 @@ function Usage() {
       {err && <div className="error">{err}</div>}
       <div className="card tablewrap">
         <table>
-          <thead><tr><th>When</th><th>Customer</th><th>Resource fetched</th><th>Status</th><th>Response provided</th><th>IP</th></tr></thead>
+          <thead><tr><th>When</th><th>Customer</th><th>Resource fetched</th><th>Status</th><th>Response provided</th><th>IP</th><th></th></tr></thead>
           <tbody>
             {items.map(u => (
               <tr key={u.id}>
                 <td className="muted" style={{ whiteSpace: 'nowrap' }}>{new Date(u.timestamp).toLocaleString()}</td>
                 <td><b>{u.customer}</b></td>
-                <td style={{ maxWidth: 260, wordBreak: 'break-all' }}>{u.resource}</td>
+                <td style={{ maxWidth: 240, wordBreak: 'break-all' }}>{u.resource}</td>
                 <td>{u.status_code === 200 ? <span className="pill ok">200</span> : <span className="pill bad">{u.status_code}</span>}</td>
-                <td className="muted" style={{ maxWidth: 300 }}>{u.response_summary}</td>
+                <td className="muted" style={{ maxWidth: 280 }}>{u.response_summary}</td>
                 <td className="muted">{u.ip_address}</td>
+                <td><button className="btn sm ghost" disabled={busy} onClick={() => openEntry(u.id)}>View</button></td>
               </tr>
             ))}
-            {!items.length && <tr><td colSpan={6} className="muted">No customer requests logged yet.</td></tr>}
+            {!items.length && <tr><td colSpan={7} className="muted">No customer requests logged yet.</td></tr>}
           </tbody>
         </table>
+      </div>
+      {entry && <UsageDetail e={entry} onClose={() => setEntry(null)} />}
+    </div>
+  )
+}
+
+function UsageDetail({ e, onClose }) {
+  const kb = e.response.size_bytes >= 1024 ? (e.response.size_bytes / 1024).toFixed(1) + ' KB' : e.response.size_bytes + ' B'
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" style={{ width: 860 }} onClick={ev => ev.stopPropagation()}>
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <h2 style={{ margin: 0 }}>Request #{e.id}</h2>
+          {e.response.status_code === 200
+            ? <span className="pill ok">200 OK</span>
+            : <span className="pill bad">{e.response.status_code}</span>}
+        </div>
+        <div className="grid g2" style={{ marginTop: 10 }}>
+          <div>
+            <label>Customer</label>
+            <p><b>{e.customer.name}</b> (id {e.customer.id}){e.customer.contact_email ? ` · ${e.customer.contact_email}` : ''}<br />
+              <span className="muted">Rate limit {e.customer.rate_limit}/min · {e.customer.is_active ? 'active' : 'inactive'}</span></p>
+            <label>When</label>
+            <p>{new Date(e.timestamp).toLocaleString()}</p>
+            <label>Source</label>
+            <p>IP {e.request.ip_address || '—'}<br />
+              <span className="muted" style={{ wordBreak: 'break-all' }}>{e.request.user_agent || 'no user agent'}</span></p>
+          </div>
+          <div>
+            <label>Resource fetched</label>
+            <p style={{ wordBreak: 'break-all' }}>{e.request.resource}</p>
+            <label>Response</label>
+            <p>{e.response.summary}<br />
+              <span className="muted">{kb} · served in {e.response.duration_ms} ms</span></p>
+          </div>
+        </div>
+        <label>Complete response body served to the customer</label>
+        <pre style={{ background: '#f4f6f9', border: '1px solid #dde3ea', borderRadius: 4, padding: 10,
+                      maxHeight: 320, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+          {e.response.body ? (typeof e.response.body === 'string' ? e.response.body : JSON.stringify(e.response.body, null, 2)) : '(no body stored for this entry)'}
+        </pre>
+        <div className="row" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
+          <button className="btn ghost" onClick={onClose}>Close</button>
+        </div>
       </div>
     </div>
   )

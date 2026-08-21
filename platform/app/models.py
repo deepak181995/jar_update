@@ -105,6 +105,10 @@ class CertinAccessLog(Base):
     resource: Mapped[str] = mapped_column(String(512))
     status_code: Mapped[int] = mapped_column(Integer, default=200)
     response_summary: Mapped[str] = mapped_column(String(512), default="")
+    response_body: Mapped[str] = mapped_column(Text, default="")
+    response_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    user_agent: Mapped[str] = mapped_column(String(256), default="")
     ip_address: Mapped[str] = mapped_column(String(64), default="")
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 

@@ -82,8 +82,47 @@ def usage(customer_id: int = Query(default=0, ge=0), limit: int = Query(default=
         "id": r.id, "customer": names.get(r.customer_id, "unknown"),
         "customer_id": r.customer_id, "resource": r.resource,
         "status_code": r.status_code, "response_summary": r.response_summary,
+        "duration_ms": r.duration_ms, "response_bytes": r.response_bytes,
         "ip_address": r.ip_address, "timestamp": r.timestamp,
     } for r in rows]}
+
+
+@router.get("/usage/{entry_id}")
+def usage_detail(entry_id: int, user=Depends(require_role(ROLE_ADMIN)),
+                 db: Session = Depends(get_db)):
+    r = db.get(models.CertinAccessLog, entry_id)
+    if not r:
+        raise HTTPException(404, "Usage entry not found")
+    customer = db.get(models.CertinCustomer, r.customer_id) if r.customer_id else None
+    body = None
+    if r.response_body:
+        try:
+            body = json.loads(r.response_body)
+        except Exception:
+            body = r.response_body
+    return {
+        "id": r.id,
+        "timestamp": r.timestamp,
+        "customer": {
+            "id": customer.id if customer else None,
+            "name": customer.name if customer else "unknown",
+            "contact_email": customer.contact_email if customer else "",
+            "rate_limit": customer.rate_limit if customer else None,
+            "is_active": customer.is_active if customer else None,
+        },
+        "request": {
+            "resource": r.resource,
+            "ip_address": r.ip_address,
+            "user_agent": r.user_agent,
+        },
+        "response": {
+            "status_code": r.status_code,
+            "summary": r.response_summary,
+            "duration_ms": r.duration_ms,
+            "size_bytes": r.response_bytes,
+            "body": body,
+        },
+    }
 
 
 # ---------- CERT-In customer management (administrator only) ----------

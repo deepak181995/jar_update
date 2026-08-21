@@ -36,6 +36,10 @@ def startup():
             conn.execute(text("ALTER TABLE quote_requests ADD COLUMN IF NOT EXISTS partner_reference VARCHAR(128) DEFAULT ''"))
             conn.execute(text("ALTER TABLE partners ADD COLUMN IF NOT EXISTS environment VARCHAR(16) DEFAULT 'uat'"))
             conn.execute(text("ALTER TABLE partners ADD COLUMN IF NOT EXISTS api_signing_secret VARCHAR(255)"))
+            conn.execute(text("ALTER TABLE certin_access_log ADD COLUMN IF NOT EXISTS response_body TEXT DEFAULT ''"))
+            conn.execute(text("ALTER TABLE certin_access_log ADD COLUMN IF NOT EXISTS response_bytes INTEGER DEFAULT 0"))
+            conn.execute(text("ALTER TABLE certin_access_log ADD COLUMN IF NOT EXISTS duration_ms INTEGER DEFAULT 0"))
+            conn.execute(text("ALTER TABLE certin_access_log ADD COLUMN IF NOT EXISTS user_agent VARCHAR(256) DEFAULT ''"))
     from . import callbacks
     callbacks.start_worker()
     db = SessionLocal()
